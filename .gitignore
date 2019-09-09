@@ -1,0 +1,6 @@
+saved_weights/
+logs/
+__pycache__/
+*.pyc
+*.log
+
