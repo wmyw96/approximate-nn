@@ -31,6 +31,8 @@ parser.add_argument('--save_weight_dir', default='saved_weights/mnist-1000', typ
 parser.add_argument('--load_weight_dir', default='saved_weights/mnist-1000', type=str)
 parser.add_argument('--decay', default=0.95, type=float)
 parser.add_argument('--save_log_dir', default='logs/mnist-1000', type=str)
+parser.add_argument('--seed', default=1234, type=int)
+parser.add_argument('--train', default='lst', type=str)
 
 def get_network_params():
     num_hidden = args.num_hidden.split(',')
@@ -44,7 +46,7 @@ def get_network_params():
         act = tf.nn.tanh
     else:
         raise NotImplemented
-    activation = [act] * len(num_hidden) + [None]
+    activation = [act] * (len(num_hidden) - 1) + [None]
     return num_hidden, weight_decay, activation
 
 args = parser.parse_args()
@@ -54,8 +56,9 @@ if args.gpu > -1:
     print("GPU COMPATIBLE RUN...")
     os.environ['CUDA_VISIBLE_DEVICES'] = str(args.gpu)
 
-np.random.seed(1234)
-tf.set_random_seed(1234)
+SEED = args.seed
+np.random.seed(SEED)
+tf.set_random_seed(SEED)
 
 def feed_forward(x, num_hidden, decay, activation, is_training):
     depth = len(num_hidden)
@@ -66,6 +69,9 @@ def feed_forward(x, num_hidden, decay, activation, is_training):
         cur_layer = tf.layers.dense(layers[-1], num_hidden[_], name='dense_' + str(_), 
                                     activation=activation[_], 
                                     kernel_initializer=tf.contrib.layers.variance_scaling_initializer())
+        if _ + 1 < depth:
+            print('use batch norm')
+            cur_layer = tf.layers.batch_normalization(cur_layer, center=False, scale=False, training=is_training)
         with tf.variable_scope('dense_' + str(_), reuse=True):
             w = tf.get_variable('kernel')
         l2_loss += tf.reduce_sum(tf.square(w)) * decay[_] / num_hidden[_]
@@ -79,9 +85,10 @@ def show_variables(cl):
 def build_mnist_model(num_hidden, decay, activation):
     x = tf.placeholder(dtype=tf.float32, shape=[None, args.x_dim])
     y = tf.placeholder(dtype=tf.int64, shape=[None])
+    is_training = tf.placeholder(dtype=tf.bool, shape=[])
     onehot_y = tf.one_hot(y, args.nclass)
     with tf.variable_scope('network'):
-        out, reg = feed_forward(x, num_hidden, decay, activation, False)
+        out, reg = feed_forward(x, num_hidden, decay, activation, is_training)
     log_y = tf.nn.softmax_cross_entropy_with_logits(labels=onehot_y, logits=out, dim=1)
 
     acc = tf.reduce_mean(tf.cast(tf.equal(tf.argmax(out, 1), y), tf.float32))
@@ -93,6 +100,10 @@ def build_mnist_model(num_hidden, decay, activation):
     last_layer_weights = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, 
         scope='network/dense_{}'.format(len(num_hidden) - 1))
     
+    update_ops = tf.get_collection(tf.GraphKeys.UPDATE_OPS, scope='network')
+    for item in update_ops:
+        print('Update {}'.format(item))
+
     lr_decay = tf.placeholder(dtype=tf.float32, shape=[])
     all_op = tf.train.AdamOptimizer(args.lr * lr_decay)
     all_grads = all_op.compute_gradients(loss=loss, var_list=all_weights)
@@ -109,7 +120,8 @@ def build_mnist_model(num_hidden, decay, activation):
     ph = {
         'x': x,
         'y': y,
-        'lr_decay': lr_decay
+        'lr_decay': lr_decay,
+        'is_training': is_training
     }
     ph['kernel_l0'] = tf.placeholder(dtype=tf.float32, shape=weight_dict['network/dense_0/kernel:0'].get_shape())
     ph['bias_l0'] = tf.placeholder(dtype=tf.float32, shape=weight_dict['network/dense_0/bias:0'].get_shape())
@@ -119,13 +131,15 @@ def build_mnist_model(num_hidden, decay, activation):
             'weights': all_weights,
             'train': all_train_op,
             'acc_loss': acc,
-            'entropy_loss': entropy_loss
+            'entropy_loss': entropy_loss,
+            'update': update_ops
         },
         'lst':{
             'weights': all_weights,
             'train': lst_train_op,
             'acc_loss': acc,
-            'entropy_loss': entropy_loss        
+            'entropy_loss': entropy_loss,
+            'update': update_ops       
         },
         'eval':{
             'weights': weight_dict,
@@ -164,6 +178,13 @@ test_labels = test_labels.reshape(-1)
 
 ndata_train = train_images.shape[0]
 ndata_test = test_images.shape[0]
+
+# do normalization
+#tr_mean = np.mean(train_images, 0, keepdims=True)
+#tr_std = np.std(train_images, 0, keepdims=True) + 1e-8
+#print(np.min(tr_std))
+#train_images = (train_images - tr_mean) / tr_std
+#test_images = (test_images - tr_mean) / tr_std
 
 sess.run(tf.global_variables_initializer())
 
@@ -219,14 +240,14 @@ if args.mode == 'train':
             batch_idx = cur_idx[t * args.batch_size: (t + 1) * args.batch_size]
             batch_x = train_images[batch_idx, :]
             batch_y = train_labels[batch_idx]
-            fetch = sess.run(targets['lst'], feed_dict={ph['x']: batch_x, ph['y']: batch_y, ph['lr_decay']: args.decay**epoch})
+            fetch = sess.run(targets[args.train], feed_dict={ph['is_training']: True, ph['x']: batch_x, ph['y']: batch_y, ph['lr_decay']: args.decay**epoch})
             update_loss(fetch, train_info)
 
         test_info = {}
         for t in tqdm(range(ndata_test // args.batch_size)):
             batch_x = test_images[t * args.batch_size: (t + 1) * args.batch_size, :]
             batch_y = test_labels[t * args.batch_size: (t + 1) * args.batch_size]
-            fetch = sess.run(targets['eval'], feed_dict={ph['x']: batch_x, ph['y']: batch_y})
+            fetch = sess.run(targets['eval'], feed_dict={ph['is_training']: False, ph['x']: batch_x, ph['y']: batch_y})
             update_loss(fetch, test_info)
 
         print_log('Train', epoch, train_info)
