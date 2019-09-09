@@ -67,7 +67,7 @@ def feed_forward(x, num_hidden, decay, activation, is_training):
     for _ in range(depth):
         print('layer {}, num hidden = {}, activation = {}, decay = {}'.format(_, num_hidden[_], activation[_], decay[_]))
         cur_layer = tf.layers.dense(layers[-1], num_hidden[_], name='dense_' + str(_), 
-                                    activation=activation[_], 
+                                    activation=activation[_], use_bias=False,#(_ == 0),
                                     kernel_initializer=tf.contrib.layers.variance_scaling_initializer())
         if _ + 1 < depth:
             print('use batch norm')
@@ -124,7 +124,7 @@ def build_mnist_model(num_hidden, decay, activation):
         'is_training': is_training
     }
     ph['kernel_l0'] = tf.placeholder(dtype=tf.float32, shape=weight_dict['network/dense_0/kernel:0'].get_shape())
-    ph['bias_l0'] = tf.placeholder(dtype=tf.float32, shape=weight_dict['network/dense_0/bias:0'].get_shape())
+    #ph['bias_l0'] = tf.placeholder(dtype=tf.float32, shape=weight_dict['network/dense_0/bias:0'].get_shape())
 
     targets = {
         'all':{
@@ -147,8 +147,8 @@ def build_mnist_model(num_hidden, decay, activation):
             'entropy_loss': entropy_loss    
         },
         'assign_weights':{
-            'weights': tf.assign(weight_dict['network/dense_0/kernel:0'], ph['kernel_l0']),
-            'bias': tf.assign(weight_dict['network/dense_0/bias:0'], ph['bias_l0']),
+            'weights_l0': tf.assign(weight_dict['network/dense_0/kernel:0'], ph['kernel_l0']),
+            #'bias': tf.assign(weight_dict['network/dense_0/bias:0'], ph['bias_l0']),
         }
     }
 
