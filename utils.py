@@ -1,6 +1,8 @@
 import numpy as np
 import os
 
+NLAYER = 2
+
 def update_loss(fetch, loss, need_loss=True):
     for key in fetch:
         if ('loss' in key) or (not need_loss):
@@ -71,7 +73,10 @@ def sample_weight(weights, n, imp_sample=True):
     coef = coef / np.sum(coef)      # [m, 0]
     m = kernel_0.shape[0]
     if imp_sample:
-        samples = kernel_0[np.random.choice(m, n, p=coef), :]
+        sel = np.random.choice(m, n, p=coef)
+        print(coef[sel])
+        print('mean weight = {}'.format(np.mean(coef)))
+        samples = kernel_0[sel, :]
     else:
         if n > m:
             samples = kernel_0[np.random.choice(m, n), :]
