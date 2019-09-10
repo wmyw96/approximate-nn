@@ -28,7 +28,7 @@ parser.add_argument('--batch_size', default=128, type=int)
 parser.add_argument('--epoch_id', default=10, type=int)
 parser.add_argument('--mode', default='train', type=str)
 parser.add_argument('--save_weight_dir', default='saved_weights/mnist-1000', type=str)
-parser.add_argument('--load_weight_dir', default='saved_weights/mnist-1000', type=str)
+parser.add_argument('--load_weight_dir', default='', type=str)
 parser.add_argument('--decay', default=0.95, type=float)
 parser.add_argument('--save_log_dir', default='logs/mnist-1000', type=str)
 parser.add_argument('--seed', default=1234, type=int)
@@ -188,30 +188,16 @@ ndata_test = test_images.shape[0]
 
 sess.run(tf.global_variables_initializer())
 
-
-def load_weights(epoch_title):
-    epoch_dir = os.path.join(args.load_weight_dir, epoch_title)
-    kernel = np.load(os.path.join(epoch_dir, 'network_dense_0_kernel_0.npy'))
-    kernel = np.transpose(kernel, [1, 0])
-    bias = np.load(os.path.join(epoch_dir, 'network_dense_0_bias_0.npy'))
-    bias = np.expand_dims(bias, 1)
-    weights = np.concatenate([kernel, bias], 1)
-    return weights
-
-def get_weights(sess, ph, targets):
-    kernel = sess.run(targets['eval']['weights']['network/dense_0/kernel:0'])
-    kernel = np.transpose(kernel, [1, 0])
-    bias = sess.run(targets['eval']['weights']['network/dense_0/bias:0'])
-    bias = np.expand_dims(bias, 1)
-    weights = np.concatenate([kernel, bias], 1)
-    return weights
-
 def set_weights(val, sess, ph, targets):
-    kernel = val[:, :args.x_dim]
-    kernel = np.transpose(kernel, [1, 0])
-    bias = val[:, args.x_dim]
+    kernel = np.transpose(val, [1, 0])
     sess.run(targets['assign_weights']['weights'], feed_dict={ph['kernel_l0']: kernel})
-    sess.run(targets['assign_weights']['bias'], feed_dict={ph['bias_l0']: bias})
+
+
+# load and set weights
+if len(args.load_weight_dir) > 0:
+    weights = load_weights(args.load_weight_dir)
+    kernel_0 = sample_weight(weights, num_hidden[0])     # [m, 728]
+    set_weights(kernel_0, sess, ph, targets)
 
 
 if args.mode == 'train':
@@ -266,10 +252,3 @@ if args.mode == 'train':
             name_saved = name_saved.replace(':', '_', 1)
             val = sess.run(targets['eval']['weights'][name])
             np.save(os.path.join(epoch_dir, name_saved + '.npy'), val)
-
-elif args.mode == 'dist_train':
-    init_weights = load_weights('init')
-    trained_weights = load_weights('epoch{}'.format(args.epoch_id))
-
-    cur_weights = get_weights(sess, ph, targets)
-
