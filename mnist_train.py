@@ -240,7 +240,10 @@ if args.mode == 'train':
             batch_idx = cur_idx[t * args.batch_size: (t + 1) * args.batch_size]
             batch_x = train_images[batch_idx, :]
             batch_y = train_labels[batch_idx]
-            fetch = sess.run(targets[args.train], feed_dict={ph['is_training']: True, ph['x']: batch_x, ph['y']: batch_y, ph['lr_decay']: args.decay**epoch})
+            mode = args.train
+            if epoch < 4:
+                mode = 'all'
+            fetch = sess.run(targets[mode], feed_dict={ph['is_training']: True, ph['x']: batch_x, ph['y']: batch_y, ph['lr_decay']: args.decay**epoch})
             update_loss(fetch, train_info)
 
         test_info = {}
