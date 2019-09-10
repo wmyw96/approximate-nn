@@ -53,7 +53,7 @@ def sample_weight(weights, n, imp_sample=True):
         samples = kernel_0[np.random.choice(m, n, p=coef), :]
     else:
         if n > m:
-            samples = kernel_0[np.random.choice(m, n), :, :]
+            samples = kernel_0[np.random.choice(m, n), :]
         else:
             samples = kernel_0
     return samples
