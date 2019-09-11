@@ -100,7 +100,7 @@ def feed_forward(x, num_hidden, decay, activation, is_training):
                                     activation=activation[_], use_bias=False,#(_ == 0),
                                     kernel_initializer=tf.contrib.layers.variance_scaling_initializer())
         if _ + 1 < depth:
-            #print('use batch norm')
+            print('use batch norm')
             cur_layer = batchnorm(cur_layer, is_training)
             #cur_layer = tf.layers.batch_normalization(cur_layer, center=False, scale=False, training=is_training)
         with tf.variable_scope('dense_' + str(_), reuse=True):
@@ -265,8 +265,8 @@ if args.mode == 'train':
             if epoch < 4 and args.first_train:
                 mode = 'all'
             
-            fetch = sess.run(targets['layers'], feed_dict={ph['is_training']: True, ph['x']: batch_x, ph['y']: batch_y, ph['lr_decay']: args.decay**epoch})
-            layer1 = fetch[1]
+            #fetch = sess.run(targets['layers'], feed_dict={ph['is_training']: True, ph['x']: batch_x, ph['y']: batch_y, ph['lr_decay']: args.decay**epoch})
+            #layer1 = fetch[1]
             #print(layer1.shape)
             #print(np.mean(layer1, 0))
             #if t == 0:
@@ -301,5 +301,5 @@ if args.mode == 'train':
             name_saved = name_saved.replace(':', '_', 1)
             val = sess.run(targets['eval']['weights'][name])
             if 'dense_1' in name:
-                val = val * np.expand_dims(pp1, 1) # [10, m]
+                val = val * np.expand_dims(pp1, 1) # [m, 10]
             np.save(os.path.join(epoch_dir, name_saved + '.npy'), val)

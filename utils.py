@@ -74,12 +74,12 @@ def sample_weight(weights, n, imp_sample=True):
     m = kernel_0.shape[0]
     if imp_sample:
         sel = np.random.choice(m, n, p=coef)
-        print(coef[sel])
-        print('mean weight = {}'.format(np.mean(coef)))
+        #print(coef[sel])
+        #print('mean weight = {}'.format(np.mean(coef)))
         samples = kernel_0[sel, :]
     else:
-        if n > m:
+        if True: #n > m:
             samples = kernel_0[np.random.choice(m, n), :]
-        else:
-            samples = kernel_0
+        #else:
+        #    samples = kernel_0
     return samples
