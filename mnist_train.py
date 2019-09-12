@@ -59,7 +59,9 @@ if args.gpu > -1:
 
 SEED = args.seed
 np.random.seed(SEED)
-tf.set_random_seed(SEED)
+#tf.set_random_seed(SEED)
+
+global_seed = tf.placeholder(tf.int32, shape=[])
 
 from tensorflow.python.training.moving_averages import assign_moving_average
 
@@ -139,10 +141,12 @@ def build_mnist_model(num_hidden, decay, activation):
     all_op = tf.train.AdamOptimizer(args.lr * lr_decay)
     all_grads = all_op.compute_gradients(loss=loss, var_list=all_weights)
     all_train_op = all_op.apply_gradients(grads_and_vars=all_grads)
-    lst_op = tf.train.AdamOptimizer(args.lr * lr_decay)
+    lst_op = tf.train.GradientDescentOptimizer(args.lr * lr_decay)
     lst_grads = lst_op.compute_gradients(loss=loss, var_list=last_layer_weights)
     lst_train_op = lst_op.apply_gradients(grads_and_vars=lst_grads)
-
+    reset_lst_op = tf.variables_initializer(lst_op.variables())
+    reset_all_op = tf.variables_initializer(all_op.variables())
+    
     weight_dict = {}
     for item in all_weights:
         if 'kernel' in item.name:
@@ -173,7 +177,8 @@ def build_mnist_model(num_hidden, decay, activation):
             'train': lst_train_op,
             'acc_loss': acc,
             'entropy_loss': entropy_loss,
-            'update': update_ops       
+            'update': update_ops,       
+            'reg_loss': reg
         },
         'eval':{
             'weights': weight_dict,
@@ -183,11 +188,39 @@ def build_mnist_model(num_hidden, decay, activation):
         'assign_weights':{
             'weights_l0': tf.assign(weight_dict['network/dense_0/kernel:0'], ph['kernel_l0']),
             #'bias': tf.assign(weight_dict['network/dense_0/bias:0'], ph['bias_l0']),
+        },
+        'reset': {
+            'lst': reset_lst_op,
+            'all': reset_all_op
         }
     }
 
     return ph, targets
 
+
+import scipy.stats as stats
+
+
+def resample_2layer(sess, ph, targets, wsigma, ratio=1.0):
+    kernel = sess.run(targets['eval']['weights']['network/dense_0/kernel:0'])   # [784, m]
+    u = sess.run(targets['eval']['weights']['network/dense_1/kernel:0'])        # [m, 10]
+    u = u * np.expand_dims(wsigma, 1)
+    m = wsigma.shape[0]
+    kernel_0_weight = sample_weight([kernel, u], wsigma.shape[0], imp_sample=True)
+    mmd_dist = mmd_fixed(kernel_0_weight, np.transpose(kernel))
+    print('mmd distance after transform = {}'.format(mmd_dist))
+    kernel_resp = np.transpose(kernel_0_weight)
+    sess.run(targets['reset']['all'])
+    sess.run(targets['reset']['lst'])
+    
+    kernel_new_rv = stats.truncnorm(-1, 1, loc=0, scale=1/np.sqrt(28*28))
+    kernel_new = kernel_new_rv.rvs((28*28, m))
+    #sess.run(targets['eval']['weights']['network/dense_0/kernel:0'])   # [784, m]
+    u_new = sess.run(targets['eval']['weights']['network/dense_1/kernel:0'])
+    accept = np.random.binomial(1, ratio, (1, m))
+    kernel_feed = accept * kernel_resp + (1 - accept) * kernel_new
+    kernel_feed += np.random.normal(0, 0.1/np.sqrt(28))
+    sess.run(targets['assign_weights']['weights_l0'], feed_dict={ph['kernel_l0']: kernel_feed})
 
 num_hidden, decay, activation = get_network_params()
 ph, targets = build_mnist_model(num_hidden, decay, activation)
@@ -271,7 +304,7 @@ if args.mode == 'train':
             #print(np.mean(layer1, 0))
             #if t == 0:
             #    print(np.max(np.std(layer1, 0)), np.min(np.std(layer1, 0)))
-            fetch = sess.run(targets[mode], feed_dict={ph['is_training']: True, ph['x']: batch_x, ph['y']: batch_y, ph['lr_decay']: args.decay**epoch})
+            fetch = sess.run(targets[mode], feed_dict={ph['is_training']: True, ph['x']: batch_x, ph['y']: batch_y, ph['lr_decay']: args.decay**(epoch%50)})
             update_loss(fetch, train_info)
         
         pp1 = []
@@ -290,7 +323,9 @@ if args.mode == 'train':
         print('Std [{}, {}]: {} +/- {}'.format(np.min(pp1), np.max(pp1), np.mean(pp1), np.std(pp1)))
         print_log('Train', epoch, train_info)
         print_log('Test', epoch, test_info)
-
+        
+        if (epoch + 1) % 50 == 0:
+            resample_2layer(sess, ph, targets, pp1)
         # save weights
         epoch_dir = os.path.join(args.save_weight_dir, 'epoch{}'.format(epoch))
         if not os.path.exists(epoch_dir):
