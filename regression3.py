@@ -23,7 +23,7 @@ parser = argparse.ArgumentParser(description='MNIST')
 parser.add_argument('--x_dim', default=1, type=int)
 parser.add_argument('--gpu', default=-1, type=int)
 parser.add_argument('--num_hidden', default='100,10000,1', type=str)
-parser.add_argument('--weight_decay', default='0.0,0.0001,0.01', type=str)
+parser.add_argument('--weight_decay', default='0.0,0.01,1.0', type=str)
 parser.add_argument('--activation', default='tanh', type=str)
 parser.add_argument('--lr', default=1e-3, type=float)
 parser.add_argument('--num_epoches', default=1000, type=int)
@@ -222,6 +222,9 @@ mean_x = np.mean(train_x, 0, keepdims=True)
 std_x = np.std(train_x, 0, keepdims=True)
 train_x = (train_x - mean_x) / std_x
 
+n2 = num_hidden[-2]
+n1 = num_hidden[-3]
+
 sess.run(tf.global_variables_initializer())
 
 
@@ -284,8 +287,8 @@ if True:
         print('theta2 shape = {}'.format(theta2.shape))
         print('theta1 shape = {}'.format(theta1.shape))
 
-        u_norm = get_norm(u)
-        theta2_norm = get_norm(theta2)
+        u_norm = get_norm(u) * np.sqrt(n2)
+        theta2_norm = get_norm(theta2) * np.sqrt(n1)
         theta1 = np.squeeze(theta1)
         #u = pp1 / 33.0
         #u = np.sqrt(np.sum(np.square(u), 1))
