@@ -103,8 +103,8 @@ def feed_forward(x, num_hidden, decay, activation, is_training):
 
         with tf.variable_scope('dense_' + str(_), reuse=True):
             w = tf.get_variable('kernel')           # [1, m]        
-        if _ + 1 < depth:
-            cur_layer = batch_norm(cur_layer, is_training)
+        #if _ + 1 < depth:
+        #    cur_layer = batch_norm(cur_layer, is_training)
         l2_loss += tf.reduce_sum(tf.square(w)) * decay[_] / num_hidden[_]
         layers.append(cur_layer)
     return layers[-1], l2_loss, layers
@@ -142,7 +142,7 @@ def build_model(num_hidden, decay, activation):
     all_grads = all_op.compute_gradients(loss=loss, var_list=all_weights)
 
     noise_grads = []
-    temp = 1e-5
+    temp = 1e-4
     for g, v in all_grads:
         if g is not None:
             g = g + tf.sqrt(args.lr * lr_decay) * temp * tf.random_normal(shape=v.get_shape(), mean=0, stddev=1)

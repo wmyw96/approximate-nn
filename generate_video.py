@@ -14,7 +14,7 @@ def readinimage(path):
 dir_ = 'logs/sin1d-1000'
 
 frames = []
-for i in range(0, 90):
+for i in range(0, 20):
     im1 = readinimage(os.path.join(dir_, 'pred_{}.png'.format(i)))
     #im3 = readinimage(os.path.join(dir_, 'uw_{}_origin.png'.format(i)))    
 
