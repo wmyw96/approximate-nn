@@ -95,8 +95,8 @@ def feed_forward(x, num_hidden, decay, activation, is_training):
 
         with tf.variable_scope('dense_' + str(_), reuse=True):
             w = tf.get_variable('kernel')           # [1, m]        
-        if _ + 1 < depth:
-            cur_layer = batch_norm(cur_layer, is_training)
+        #if _ + 1 < depth:
+        #    cur_layer = batch_norm(cur_layer, is_training)
         l2_loss += tf.reduce_sum(tf.square(w)) * decay[_] / num_hidden[_]
         layers.append(cur_layer)
     return layers[-1], l2_loss, layers
@@ -134,7 +134,7 @@ def build_model(num_hidden, decay, activation):
     all_grads = all_op.compute_gradients(loss=loss, var_list=all_weights)
 
     noise_grads = []
-    temp = 1e-5
+    temp = 1e-4
     for g, v in all_grads:
         if g is not None:
             g = g + tf.sqrt(args.lr * lr_decay) * temp * tf.random_normal(shape=v.get_shape(), mean=0, stddev=1)
@@ -228,15 +228,15 @@ n1 = num_hidden[-3]
 sess.run(tf.global_variables_initializer())
 
 
-def get_norm(u):
-    return np.sqrt(np.sum(np.square(u), 1))
+def get_norm(u, axis=-1):
+    return np.sqrt(np.sum(np.square(u), axis))
 
 
 if True:
     rmse = []
 
     for epoch in range(args.num_epoches):
-        pp1 = []
+        pp1, pp2 = [], []
         test_info = {}
         for t in tqdm(range(ndata_train // args.batch_size)):
             batch_x = train_x[t * args.batch_size: (t + 1) * args.batch_size, :]
@@ -248,12 +248,15 @@ if True:
             fetch = sess.run(targets['layers'], feed_dict={ph['is_training']: False, 
                 ph['x']: batch_x, ph['y']: batch_y, ph['lr_decay']: args.decay**(epoch)})
             pp1.append(fetch[1])
+            pp2.append(fetch[2])
 
         rmse.append(np.mean(test_info['rmse_loss']))
 
         pp1 = np.std(np.concatenate(pp1, 0), 0)
+        pp2 = np.std(np.concatenate(pp2, 0), 0)
         #print(np.max(np.std(pp1, 0)), np.min(np.std(pp1, 0)))
-        print('Std [{}, {}]: {} +/- {}'.format(np.min(pp1), np.max(pp1), np.mean(pp1), np.std(pp1)))
+        print('Std Layer 1 [{}, {}]: {} +/- {}'.format(np.min(pp1), np.max(pp1), np.mean(pp1), np.std(pp1)))
+        print('Std Layer 2 [{}, {}]: {} +/- {}'.format(np.min(pp2), np.max(pp2), np.mean(pp2), np.std(pp2)))
         print_log('Test', epoch, test_info)
         
         xp = np.arange(1000) / 1000.0 * RANGE * 2 - RANGE
@@ -305,6 +308,20 @@ if True:
         ax3 = plt.subplot(1, 3, 3)
         ax3.hist(theta1, bins=30, normed=True, color="#FF0000", alpha=.9)
         plt.savefig(os.path.join(args.save_log_dir, 'marginal_{}.png'.format(epoch)))
+        plt.close()
+        plt.clf()
+
+
+        # joint distribution
+        plt.figure(figsize=(6,6))
+        origin = sns.jointplot(x=get_norm(theta2, 0)*np.sqrt(n1), y=np.squeeze(u)*np.sqrt(n2), kind='scatter', color='red')
+        origin.savefig(os.path.join(args.save_log_dir, "ut2n_origin_{}.png".format(epoch)))
+        plt.close()
+        plt.clf()
+
+        plt.figure(figsize=(6,6))
+        origin = sns.jointplot(x=theta1, y=theta2_norm, kind='scatter', color='red')
+        origin.savefig(os.path.join(args.save_log_dir, "t1t2n_origin_{}.png".format(epoch)))
         plt.close()
         plt.clf()
 
