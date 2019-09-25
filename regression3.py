@@ -31,6 +31,7 @@ parser.add_argument('--batch_size', default=100, type=int)
 parser.add_argument('--decay', default=0.95, type=float)
 parser.add_argument('--save_log_dir', default='logs/sin1d3-1000', type=str)
 parser.add_argument('--train', default='all', type=str)
+parser.add_argument('--save_weight_dir', type=str, default='../../data/approximate-nn/logs/sin1d3-joint')
 
 args = parser.parse_args()
 
@@ -52,35 +53,6 @@ def get_network_params():
     activation = [act] * (len(num_hidden) - 1) + [None]
     return num_hidden, weight_decay, activation
 
-def batch_norm(x, train, eps=1e-9, decay=0.9, affine=False, name=None):
-    with tf.variable_scope(name, default_name='batch_norm'):
-        params_shape = x.get_shape()[-1:]
-        print(params_shape)
-        moving_mean = tf.get_variable('mean', params_shape,
-                                      initializer=tf.zeros_initializer,
-                                      trainable=False)
-        moving_variance = tf.get_variable('variance', params_shape,
-                                          initializer=tf.ones_initializer,
-                                          trainable=False)
-
-        def mean_var_with_update():
-            mean, variance = tf.nn.moments(x, 0, name='moments')
-            with tf.control_dependencies([assign_moving_average(moving_mean, mean, decay),
-                                          assign_moving_average(moving_variance, variance, decay)]):
-                return tf.identity(mean), tf.identity(variance)
-        mean, variance = tf.cond(train, mean_var_with_update, lambda: (moving_mean, moving_variance))
-        mean = tf.stop_gradient(mean)
-        variance = tf.stop_gradient(variance)
-        if affine:
-            beta = tf.get_variable('beta', params_shape,
-                                   initializer=tf.zeros_initializer)
-            gamma = tf.get_variable('gamma', params_shape,
-                                    initializer=tf.ones_initializer)
-            x = tf.nn.batch_normalization(x, mean, variance, beta, gamma, eps)
-        else:
-            x = tf.nn.batch_normalization(x, mean, variance, None, None, eps)
-        return x
-
 def feed_forward(x, num_hidden, decay, activation, is_training):
     depth = len(num_hidden)
     layers = [tf.identity(x)]
@@ -89,14 +61,17 @@ def feed_forward(x, num_hidden, decay, activation, is_training):
     inp_dim = int(x.get_shape()[-1])
     for _ in range(depth):
         print('layer {}, num hidden = {}, activation = {}, decay = {}'.format(_, num_hidden[_], activation[_], decay[_]))
+        init = tf.random_normal_initializer(mean=0,stddev=1/np.sqrt(inp_dim))
+        #if _ + 1 == depth:
+        #    init = tf.zeros_initializer()
         cur_layer = tf.layers.dense(layers[-1], num_hidden[_], name='dense_' + str(_), 
                                         activation=activation[_], use_bias=False,
-                                        kernel_initializer=tf.variance_scaling_initializer())
+                                        kernel_initializer=init)
 
         with tf.variable_scope('dense_' + str(_), reuse=True):
             w = tf.get_variable('kernel')           # [1, m]        
-        #if _ + 1 < depth:
-        #    cur_layer = batch_norm(cur_layer, is_training)
+        inp_dim = num_hidden[_]
+        
         l2_loss += tf.reduce_sum(tf.square(w)) * decay[_] / num_hidden[_]
         layers.append(cur_layer)
     return layers[-1], l2_loss, layers
@@ -236,7 +211,7 @@ if True:
     rmse = []
 
     for epoch in range(args.num_epoches):
-        pp1, pp2 = [], []
+        #pp1, pp2 = [], []
         test_info = {}
         for t in tqdm(range(ndata_train // args.batch_size)):
             batch_x = train_x[t * args.batch_size: (t + 1) * args.batch_size, :]
@@ -247,19 +222,19 @@ if True:
             update_loss(fetch, test_info)
             fetch = sess.run(targets['layers'], feed_dict={ph['is_training']: False, 
                 ph['x']: batch_x, ph['y']: batch_y, ph['lr_decay']: args.decay**(epoch)})
-            pp1.append(fetch[1])
-            pp2.append(fetch[2])
+            #pp1.append(fetch[1])
+            #pp2.append(fetch[2])
 
         rmse.append(np.mean(test_info['rmse_loss']))
 
-        pp1 = np.std(np.concatenate(pp1, 0), 0)
-        pp2 = np.std(np.concatenate(pp2, 0), 0)
+        #pp1 = np.std(np.concatenate(pp1, 0), 0)
+        #pp2 = np.std(np.concatenate(pp2, 0), 0)
         #print(np.max(np.std(pp1, 0)), np.min(np.std(pp1, 0)))
-        print('Std Layer 1 [{}, {}]: {} +/- {}'.format(np.min(pp1), np.max(pp1), np.mean(pp1), np.std(pp1)))
-        print('Std Layer 2 [{}, {}]: {} +/- {}'.format(np.min(pp2), np.max(pp2), np.mean(pp2), np.std(pp2)))
+        #print('Std Layer 1 [{}, {}]: {} +/- {}'.format(np.min(pp1), np.max(pp1), np.mean(pp1), np.std(pp1)))
+        #print('Std Layer 2 [{}, {}]: {} +/- {}'.format(np.min(pp2), np.max(pp2), np.mean(pp2), np.std(pp2)))
         print_log('Test', epoch, test_info)
         
-        xp = np.arange(1000) / 1000.0 * RANGE * 2 - RANGE
+        xp = np.arange(400) / 400.0 * RANGE * 2 - RANGE
         xp = np.expand_dims(xp, 1)
         xx = (xp - mean_x) / std_x
         yy = np.sin(xp)
@@ -271,7 +246,7 @@ if True:
             layer_i = layers_value[i]     #  [B, m]
             layer_norm = np.sqrt(np.sum(np.square(layer_i), 1))
             print('Dist of layer {} norm: mean = {}, std = {}'.format(i, np.mean(layer_norm), np.std(layer_norm)))
-
+        
         plt.figure(figsize=(6,6))
         plt.plot(xp, yy, color="red")
         plt.plot(xp, out, color="blue")
@@ -285,13 +260,22 @@ if True:
         u = sess.run(targets['eval']['weights']['network/dense_2/kernel:0'])    # [1000, 1]
         theta2 = sess.run(targets['eval']['weights']['network/dense_1/kernel:0'])    # [1000, 1]
         theta1 = sess.run(targets['eval']['weights']['network/dense_0/kernel:0'])    # [1000, 1]
-
+        
+        if epoch % 20 == 0:
+            epoch_dir = os.path.join(args.save_weight_dir, 'epoch' + str(epoch))
+            if not os.path.exists(epoch_dir):
+                os.mkdir(epoch_dir)
+            np.save(os.path.join(epoch_dir, 'theta1.npy'), theta1)
+            print('theta2_fv shape = {}'.format(np.transpose(layers_value[2]).shape))
+            np.save(os.path.join(epoch_dir, 'theta2_fv.npy'), np.transpose(layers_value[2]))
+            np.save(os.path.join(epoch_dir, 'theta2.npy'), theta2)
+        
         print('u shape = {}'.format(u.shape))
         print('theta2 shape = {}'.format(theta2.shape))
         print('theta1 shape = {}'.format(theta1.shape))
 
         u_norm = get_norm(u) * np.sqrt(n2)
-        theta2_norm = get_norm(theta2) * np.sqrt(n1)
+        theta2_norm = get_norm(theta2) * np.sqrt(n1 / n2)
         theta1 = np.squeeze(theta1)
         #u = pp1 / 33.0
         #u = np.sqrt(np.sum(np.square(u), 1))
@@ -300,6 +284,7 @@ if True:
         print('Dist of theta2_norm: mean = {}, std = {}'.format(np.mean(theta2_norm), np.std(theta2_norm)))        
         print('Dist of theta1: mean = {}, std = {}'.format(np.mean(theta1), np.std(theta1)))
 
+        print('Theta2 Norm Mean = {}'.format(np.mean(get_norm(theta2, 0))))        
         plt.figure(figsize=(12, 4))
         ax1 = plt.subplot(1, 3, 1)
         ax1.hist(u, bins=30, normed=True, color="#FF0000", alpha=.9)
@@ -331,9 +316,15 @@ if True:
             batch_idx = cur_idx[t * args.batch_size: (t + 1) * args.batch_size]
             batch_x = train_x[batch_idx, :]
             batch_y = train_y[batch_idx]
-
-            fetch = sess.run(targets[args.train], feed_dict={ph['is_training']: True, 
-                ph['x']: batch_x, ph['y']: batch_y, ph['lr_decay']: args.decay**(epoch)})
+            mode = args.train
+            ep_id = epoch
+            if epoch < 50:
+                mode = 'lst'
+            #print('training mode = {}'.format(mode))
+            else:
+                ep_id -= 50
+            fetch = sess.run(targets[mode], feed_dict={ph['is_training']: True, 
+                ph['x']: batch_x, ph['y']: batch_y, ph['lr_decay']: args.decay**(ep_id)})
             update_loss(fetch, train_info)
             #print(fetch['rmse_loss'])
 

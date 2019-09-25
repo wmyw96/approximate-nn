@@ -22,7 +22,7 @@ parser = argparse.ArgumentParser(description='MNIST')
 
 parser.add_argument('--x_dim', default=1, type=int)
 parser.add_argument('--gpu', default=-1, type=int)
-parser.add_argument('--num_hidden', default='100,10000,1', type=str)
+parser.add_argument('--num_hidden', default='1000,10000,1', type=str)
 parser.add_argument('--weight_decay', default='0.0,0.01,1.0', type=str)
 parser.add_argument('--activation', default='tanh', type=str)
 parser.add_argument('--lr', default=1e-3, type=float)
@@ -31,9 +31,33 @@ parser.add_argument('--batch_size', default=100, type=int)
 parser.add_argument('--decay', default=0.95, type=float)
 parser.add_argument('--save_log_dir', default='logs/sin1d3-1000', type=str)
 parser.add_argument('--train', default='all', type=str)
+parser.add_argument('--save_weight_dir', type=str, default='../../data/approximate-nn/logs/sin1d3-resample')
 
 args = parser.parse_args()
 
+
+def func_tsne_embedding(init, resampled, joint, path):
+    init = normalize(init)
+    resampled = normalize(resampled)
+    joint = normalize(joint)
+    tsne = manifold.TSNE(n_components=2, init='pca', random_state=501)
+    
+    n1 = init.shape[0]
+    n2 = resampled.shape[0]
+    x_concat = np.concatenate([init, resampled, joint], axis=0)
+
+    x_tsne = tsne.fit_transform(x)
+    init_tsne, resampled_tsne, joint_tsne = x_tsne[:n1, :], x_tsne[n1:n1+n2, :], x_tsne[n1+n2:, :]
+
+    plt.figure(figsize=(8, 8))
+    plt.scatter(joint_tsne[:, 0], joint_tsne[:, 1], color='red', s=0.5)
+    plt.scatter(resampled_tsne[:, 0], resampled_tsne[:, 1], color='skyblue', s=0.5)
+    plt.scatter(init_tsne[:, 0], init_tsne[:, 1], color='green', s=0.5)
+
+    plt.savefig(path)
+    plt.clf()
+    plt.close()
+    
 
 def get_network_params():
     num_hidden = args.num_hidden.split(',')
@@ -109,38 +133,45 @@ def show_variables(domain, cl):
 
 
 def binary_search(n_w, dsq_w):
-    l = 1e-9
+    l = -np.min(dsq_w) + 1e-10
     r = 1e9
-    while (r - l > 1e-9):
+    while (r - l > 1e-10):
         mid = (l + r) * 0.5
         w = n_w / np.sqrt(dsq_w + mid)
+        #if np.abs(np.sum(w) - 1) < 1e-5:
+        #    break
         if (np.sum(w) >= 1):
             l = mid
         else:
             r = mid
-    val = l
-    w = n_w / np.sqrt(dsq_w + mid)
+    val = mid
+    print('lambda = {}'.format(val))
+    w = n_w / np.sqrt(dsq_w + val)#- np.min(dsq_w) + 1e-9)
+    w = w / np.sum(w)
     return w
 
 
 def resample(prelayer, nextlayer, sample_weight):
-    # prelayer [n_i, n_{i-1}]
-    # nextlayer  [n_{i+1}, n_i]
-    ni = nextlayer.shape[1]
-    assert ni == prelayer.shape[0]
+    # prelayer [n_{i-1}, n_i]
+    # nextlayer  [n_i, n_{i+1}]
+    ni = nextlayer.shape[0]
+    print('PRELAYER SHAPE = {}'.format(prelayer.shape))
+    print('NEXTLAYER SHAPE = {}'.format(nextlayer.shape))
+    assert ni == prelayer.shape[1]
     assert ni == sample_weight.shape[0]
     sel = np.random.choice(ni, ni, p=sample_weight)
 
-    prelayer_rsp = prelayer[sel, :]
-    nextlayer_rsp = nextlayer[:, sel] / np.expand_dims(sample_weight[:, sel])
+    prelayer_rsp = prelayer[:, sel]
+    nextlayer_rsp = nextlayer[sel, :] / (np.expand_dims(sample_weight[sel], 1) * ni)
     return prelayer_rsp, nextlayer_rsp
 
-def add_noise(theta):
-    # theta [n_i, n_{i-1}]
-    return theta + np.random.normal(0, 0.3/np.sqrt(theta.shape[1]))
+def add_noise(theta, decay=1.0):
+    # theta [n_{i-1}, n_i]
+    n1, n2 = theta.shape[0], theta.shape[1]
+    return theta + np.random.normal(0, 0.1*decay/np.sqrt(theta.shape[0]), (n1, n2))
 
 def resample_3layer_nn(u, theta2, theta1, decay):
-    # u:        [1, n_2]
+    # u:        [n_2, 1]
     # theta2:   [n_1, n_2]
     # theta1:   [d, n_1]
     # decay:    list consists of 3 elements - decay[i] is the weight decay of layer i
@@ -148,20 +179,22 @@ def resample_3layer_nn(u, theta2, theta1, decay):
     n1 = theta2.shape[0]
     n2 = theta2.shape[1]
     print('Resample: d = {}, n1 = {}, n2 = {}'.format(d, n1, n2))
-    weight2_n = 1.0 / n2 * np.sqrt(decay[3-1]) * np.abs(np.squeeze(u))
+    weight2_n = 1.0 / n2 * np.sqrt(decay[3-1]) * np.abs(np.squeeze(u)) * np.sqrt(n2)
     weight2_dsq = decay[2-1] * np.sum(np.square(theta2), 0)
+    print('weight2:numerator = {} +/- {}'.format(np.mean(weight2_n), np.std(weight2_n)))
+    print('weight2:dominator = {} +/- {}'.format(np.mean(np.sqrt(weight2_dsq)), np.mean(np.sqrt(weight2_dsq))))
     weight2 = binary_search(weight2_n, weight2_dsq)
-
+    print('weight2 resample weight sum = {}'.format(np.sum(weight2)))
     theta2, u = resample(theta2, u, weight2)
-    add_noise(theta2)
-
-    weight1_n = 1.0 / n1 * np.sqrt(decay[2-1] * np.sum(np.square(theta2), 1))
-    weight1_dsq = decay[1-1] * np.sum(np.square(theta1), 0) / d
+    #theta2 = add_noise(theta2)
+    
+    weight1_n = 1.0 / n1 * np.sqrt(decay[2-1] * np.sum(np.square(theta2), 1) / n2 * n1)
+    weight1_dsq = decay[1-1] * np.sum(np.square(theta1), 0)
     weight1 = binary_search(weight1_n, weight1_dsq)
 
     theta1, theta2 = resample(theta1, theta2, weight1)
-
-    add_noise(theta1)
+    #theta1 = add_noise(theta1)
+    #theta2 = add_noise(theta2)
     return u, theta2, theta1
 
 def build_model(num_hidden, decay, activation):
@@ -174,7 +207,7 @@ def build_model(num_hidden, decay, activation):
         out, reg, layers = feed_forward(x, num_hidden, decay, activation, is_training)
 
     rmse_loss = tf.reduce_mean(tf.reduce_sum(tf.square(y - out), 1))
-    loss = rmse_loss + reg
+    loss = rmse_loss + 0.01 * reg
 
     all_weights = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope='network')
     show_variables('All Variables', all_weights)
@@ -272,6 +305,12 @@ num_hidden, decay, activation = get_network_params()
 M = num_hidden[-2]
 ph, targets = build_model(num_hidden, decay, activation)
 
+decay_resample = []
+#for i in range(len(decay)):
+decay_resample = decay
+    #decay_resample.append((decay[i] + 0.0) / np.sqrt(num_hidden[i]))
+print('DECAY RESAMPLE = {}'.format(decay_resample))
+
 if args.gpu > -1:
     gpu_options = tf.GPUOptions(allow_growth=True)
     sess = tf.Session(config=tf.ConfigProto(gpu_options=gpu_options, log_device_placement=True))
@@ -309,7 +348,7 @@ def update_weights(sess, ph, targets, u, theta2, theta1):
 
 if True:
     rmse = []
-
+    noise_decay = 1.0
     for epoch in range(args.num_epoches):
         pp1, pp2 = [], []
         test_info = {}
@@ -334,7 +373,7 @@ if True:
         print('Std Layer 2 [{}, {}]: {} +/- {}'.format(np.min(pp2), np.max(pp2), np.mean(pp2), np.std(pp2)))
         print_log('Test', epoch, test_info)
         
-        xp = np.arange(1000) / 1000.0 * RANGE * 2 - RANGE
+        xp = np.arange(400) / 400.0 * RANGE * 2 - RANGE
         xp = np.expand_dims(xp, 1)
         xx = (xp - mean_x) / std_x
         yy = np.sin(xp)
@@ -346,7 +385,7 @@ if True:
             layer_i = layers_value[i]     #  [B, m]
             layer_norm = np.sqrt(np.sum(np.square(layer_i), 1))
             print('Dist of layer {} norm: mean = {}, std = {}'.format(i, np.mean(layer_norm), np.std(layer_norm)))
-
+        
         plt.figure(figsize=(6,6))
         plt.plot(xp, yy, color="red")
         plt.plot(xp, out, color="blue")
@@ -361,14 +400,75 @@ if True:
         theta2 = sess.run(targets['eval']['weights']['network/dense_1/kernel:0'])    # [n_1, n_2]
         theta1 = sess.run(targets['eval']['weights']['network/dense_0/kernel:0'])    # [d, n_1]
 
-        u_rsp, theta2_rsp, theta1_rsp = resample_3layer_nn(u, theta2, theta1)
+        #if epoch % 20 == 0:
+        #    epoch_dir = os.path.join(args.save_weight_dir, 'epoch' + str(epoch))
+        #    if not os.path.exists(epoch_dir):
+        #        os.mkdir(epoch_dir)
+        #    np.save(os.path.join(epoch_dir, 'theta1.npy'), theta1)
+        #    print('theta2_fv shape = {}'.format(np.transpose(layers_value[2]).shape))
+        #    np.save(os.path.join(epoch_dir, 'theta2_fv.npy'), np.transpose(layers_value[2]))
+
+        def calc(inp, theta1, theta2):
+            h1 = np.tanh(np.matmul(inp, (theta1)))
+            h2 = np.tanh(np.matmul(h1, (theta2)))
+            return np.transpose(h2)
+        inp = xx
+        
+        if epoch % 20 == 0:
+            u_c, theta2_c, theta1_c = u, theta2, theta1
+            for i in range(50):
+                u_c, theta2_c, theta1_c = resample_3layer_nn(u_c, theta2_c, theta1_c, decay_resample)
+                print('Iter {}: U norm = {}, Theta2 norm = {}, Theta1 norm = {}'.format(i, np.mean(u_c*u_c), np.mean(theta2_c*theta2_c), np.mean(theta1_c * theta1_c)))
+                noise_decay = 0.6 * (0.98)**(epoch//5) + 0.4
+                if i % 2 == 0:
+                    plt.figure(figsize=(8,8))
+                    final_theta2_fv = calc(inp, theta1_c, theta2_c)
+                    for k in range(64):
+                        ax=plt.subplot(8,8,k+1)
+                        ax.scatter(np.squeeze(inp), final_theta2_fv[k, :], color='r', s=0.8)
+                        #ax.scatter(np.squeeze(final_theta1), final_theta2[:, i], color='b', s=0.8)
+                        ax.axis('off')
+                    plt.savefig(os.path.join(args.save_log_dir, 'rsp_f2_{}_{}.png'.format(epoch, i)))
+                    plt.clf()
+                    plt.close()
+                    plt.figure(figsize=(6,6))
+                    plt.hist(np.squeeze(theta1_c), bins=30, normed=True, color='red', alpha=.6)
+                    plt.savefig(os.path.join(args.save_log_dir, 'rsp_t1_{}_{}.png'.format(epoch, i)))
+                    plt.clf()
+                    plt.close()
+
+                theta2_c, theta1_c = add_noise(theta2_c, noise_decay * (i + 1) / 25), add_noise(theta1_c, noise_decay * (i + 1) / 25)
+            u_rsp, theta2_rsp, theta1_rsp = u_c, theta2_c, theta1_c #add_noise(theta2_c, noise_decay), add_noise(theta1_c, noise_decay) #resample_3layer_nn(u, theta2, theta1, decay)
+                    # resample
+            #plt.figure(figsize=(6,6))
+            #origin = sns.jointplot(x=get_norm(theta2_rsp, 0)*np.sqrt(n1), y=np.squeeze(u_rsp)*np.sqrt(n2), kind='scatter', color='red')
+            #origin.savefig(os.path.join(args.save_log_dir, "ut2n_resample_{}.png".format(epoch)))
+            #plt.close()
+            #plt.clf()
+
+            #plt.figure(figsize=(6,6))
+            #origin = sns.jointplot(x=np.squeeze(theta1_rsp), y=get_norm(theta2_rsp)*np.sqrt(n1), kind='scatter', color='red')
+            #origin.savefig(os.path.join(args.save_log_dir, "t1t2n_resample_{}.png".format(epoch)))
+            #plt.close()
+            #plt.clf()
+
+        if epoch % 40 == 0:
+            epoch_dir = os.path.join(args.save_weight_dir, 'epoch' + str(epoch))
+            if not os.path.exists(epoch_dir):
+                os.mkdir(epoch_dir)
+            np.save(os.path.join(epoch_dir, 'theta1.npy'), theta1)
+            np.save(os.path.join(epoch_dir, 'theta2.npy'), theta2)
+            print('theta2_fv shape = {}'.format(np.transpose(layers_value[2]).shape))
+            np.save(os.path.join(epoch_dir, 'theta1_rsp.npy'), theta1_c)
+            np.save(os.path.join(epoch_dir, 'theta2_rsp.npy'), theta2_c)
+            np.save(os.path.join(epoch_dir, 'theta2_nse.npy'), theta2_rsp)
 
         print('u shape = {}'.format(u.shape))
         print('theta2 shape = {}'.format(theta2.shape))
         print('theta1 shape = {}'.format(theta1.shape))
 
         u_norm = get_norm(u) * np.sqrt(n2)
-        theta2_norm = get_norm(theta2) * np.sqrt(n1)
+        theta2_norm = get_norm(theta2) * np.sqrt(n1/n2)
         theta1 = np.squeeze(theta1)
         #u = pp1 / 33.0
         #u = np.sqrt(np.sum(np.square(u), 1))
@@ -402,31 +502,31 @@ if True:
         plt.clf()
 
         # resample
-        plt.figure(figsize=(6,6))
-        origin = sns.jointplot(x=get_norm(theta2_rsp, 0)*np.sqrt(n1), y=np.squeeze(u_rsp)*np.sqrt(n2), kind='scatter', color='red')
-        origin.savefig(os.path.join(args.save_log_dir, "ut2n_resample_{}.png".format(epoch)))
-        plt.close()
-        plt.clf()
+        #plt.figure(figsize=(6,6))
+        #origin = sns.jointplot(x=get_norm(theta2_rsp, 0)*np.sqrt(n1), y=np.squeeze(u_rsp)*np.sqrt(n2), kind='scatter', color='red')
+        #origin.savefig(os.path.join(args.save_log_dir, "ut2n_resample_{}.png".format(epoch)))
+        #plt.close()
+        #plt.clf()
 
-        plt.figure(figsize=(6,6))
-        origin = sns.jointplot(x=theta1_rsp, y=get_norm(theta2)*np.sqrt(n1), kind='scatter', color='red')
-        origin.savefig(os.path.join(args.save_log_dir, "t1t2n_resample_{}.png".format(epoch)))
-        plt.close()
-        plt.clf()
+        #plt.figure(figsize=(6,6))
+        #origin = sns.jointplot(x=np.squeeze(theta1_rsp), y=get_norm(theta2_rsp)*np.sqrt(n1), kind='scatter', color='red')
+        #origin.savefig(os.path.join(args.save_log_dir, "t1t2n_resample_{}.png".format(epoch)))
+        #plt.close()
+        #plt.clf()
 
-        if epoch % 50 == 0:
+        if (epoch + 1) % 50 == 0:
             update_weights(sess, ph, targets, u_rsp, theta2_rsp, theta1_rsp)
-
-        cur_idx = np.random.permutation(ndata_train)
-        train_info = {}
-        for t in tqdm(range(ndata_train // args.batch_size)):
-            batch_idx = cur_idx[t * args.batch_size: (t + 1) * args.batch_size]
-            batch_x = train_x[batch_idx, :]
-            batch_y = train_y[batch_idx]
-
-            fetch = sess.run(targets[args.train], feed_dict={ph['is_training']: True, 
-                ph['x']: batch_x, ph['y']: batch_y, ph['lr_decay']: args.decay**(epoch)})
-            update_loss(fetch, train_info)
-            #print(fetch['rmse_loss'])
+        else:
+            cur_idx = np.random.permutation(ndata_train)
+            train_info = {}
+            for t in tqdm(range(ndata_train // args.batch_size)):
+                batch_idx = cur_idx[t * args.batch_size: (t + 1) * args.batch_size]
+                batch_x = train_x[batch_idx, :]
+                batch_y = train_y[batch_idx]
+    
+                fetch = sess.run(targets[args.train], feed_dict={ph['is_training']: True, 
+                    ph['x']: batch_x, ph['y']: batch_y, ph['lr_decay']: args.decay**(epoch)})
+                update_loss(fetch, train_info)
+                #print(fetch['rmse_loss'])
 
         print_log('Train', epoch, train_info)
