@@ -14,7 +14,7 @@ def readinimage(path):
 dir_ = 'logs/sin1d3-1000'
 
 frames = []
-for i in range(0, 900):
+for i in range(0, 264):
     #im1 = readinimage(os.path.join(dir_, 'pred_{}.png'.format(i)))
     #im3 = readinimage(os.path.join(dir_, 'uw_{}_origin.png'.format(i)))    
 
@@ -29,8 +29,8 @@ for i in range(0, 900):
     #im_up = np.concatenate([im1, im2], 1)
     #im_dn = np.concatenate([im3, im4], 1)
 
-    im_up = readinimage(os.path.join(dir_, 't1t2n_origin_{}.png'.format(i)))
-    im_dn = readinimage(os.path.join(dir_, 'ut2n_origin_{}.png'.format(i)))
+    im_up = readinimage(os.path.join(dir_, 't1t2n_resample_{}.png'.format(i)))
+    im_dn = readinimage(os.path.join(dir_, 'ut2n_resample_{}.png'.format(i)))
     im = np.concatenate([im_up, im_dn], 0)
     #im = im[::2, ::2, :]
     frames.append(im)

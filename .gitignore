@@ -3,4 +3,5 @@ logs/
 __pycache__/
 *.pyc
 *.log
+save_weights/
 
