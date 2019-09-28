@@ -83,11 +83,12 @@ def show_variables(domain, cl):
         print('{}: {}'.format(item.name, item.shape))
 
 
-def tf_add_grad_noise(grads, temp, lr):
+def tf_add_grad_noise(all_grads, temp, lr):
     noise_grads = []
     for g, v in all_grads:
         if g is not None:
-            g = g + tf.sqrt(lr) * temp * tf.random_normal(shape=v.get_shape(), mean=0, stddev=1)
+            g = g + tf.sqrt(lr) * temp * tf.random_normal(shape=v.get_shape(), 
+                mean=0, stddev=1.0/int(v.get_shape()[0]))
         noise_grads.append((g, v))
     return noise_grads
 
@@ -102,7 +103,7 @@ def build_model(num_hidden, decay, activation):
     with tf.variable_scope('network'):
         out, reg, layers = feed_forward(x, num_hidden, decay, activation, is_training)
 
-    layer2_l2_loss = tf.reduce_mean(tf.reduce_sum(tf.square(layers[2] - layer2_copy)))
+    layer2_l2_loss = tf.reduce_mean(tf.reduce_mean(tf.square(layers[2] - layer2_copy), 1))
     reinit_loss = layer2_l2_loss + reg
 
     rmse_loss = tf.reduce_mean(tf.reduce_sum(tf.square(y - out), 1))
@@ -121,7 +122,7 @@ def build_model(num_hidden, decay, activation):
     all_op = tf.train.AdamOptimizer(args.lr * lr_decay)
     all_grads = all_op.compute_gradients(loss=loss, var_list=all_weights)
 
-    noise_grads = tf_add_grad_noise(all_grads, 1e-4, args.lr * lr_decay)
+    noise_grads = tf_add_grad_noise(all_grads, 1e-3, args.lr * lr_decay)
     all_train_op = all_op.apply_gradients(grads_and_vars=noise_grads)
 
     lst_op = tf.train.AdamOptimizer(args.lr * lr_decay)
@@ -129,8 +130,9 @@ def build_model(num_hidden, decay, activation):
     lst_train_op = lst_op.apply_gradients(grads_and_vars=lst_grads)
 
     reinit_op = tf.train.AdamOptimizer(args.lr * lr_decay)
-    reinit_grads = reinit_op.compute_gradients(loss=reinit_loss, var_list='network/dense_1')
-    reinit_grads = tf_add_grad_noise(reinit_grads, 1e-4, args.lr * lr_decay)
+    reinit_grads = reinit_op.compute_gradients(loss=reinit_loss, 
+        var_list=tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope='network/dense_1'))
+    reinit_grads = tf_add_grad_noise(reinit_grads, 1e-3, args.lr * lr_decay)
     reinit_train_op = reinit_op.apply_gradients(grads_and_vars=reinit_grads)
 
     grad_k0, grad_k1 = None, None
@@ -233,11 +235,11 @@ if True:
         batch_y = train_y[t * args.batch_size: (t + 1) * args.batch_size]
 
         fetch = sess.run(targets['layers'], feed_dict={ph['is_training']: False, 
-            ph['x']: batch_x, ph['y']: batch_y, ph['lr_decay']: args.decay**(epoch)})
+            ph['x']: batch_x, ph['y']: batch_y}) #, ph['lr_decay']: args.decay**(epoch)})
         pp1.append(fetch[2])
     train_l2v = np.concatenate(pp1, 0)
 
-    for epoch in range(50):
+    for epoch in range(200):
         cur_idx = np.random.permutation(ndata_train)
         train_info = {}
         for t in tqdm(range(ndata_train // args.batch_size)):
@@ -337,7 +339,6 @@ if True:
         plt.savefig(os.path.join(args.save_log_dir, 'marginal_{}.png'.format(epoch)))
         plt.close()
         plt.clf()
-
 
         # joint distribution
         plt.figure(figsize=(6,6))
