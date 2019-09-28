@@ -57,7 +57,7 @@ def feed_forward(x, num_hidden, decay, activation, is_training):
     depth = len(num_hidden)
     layers = [tf.identity(x)]
     l2_loss = tf.constant(0.0)
-
+    l2_lloss = []
     inp_dim = int(x.get_shape()[-1])
     for _ in range(depth):
         print('layer {}, num hidden = {}, activation = {}, decay = {}'.format(_, num_hidden[_], activation[_], decay[_]))
@@ -71,10 +71,11 @@ def feed_forward(x, num_hidden, decay, activation, is_training):
         with tf.variable_scope('dense_' + str(_), reuse=True):
             w = tf.get_variable('kernel')           # [1, m]        
         inp_dim = num_hidden[_]
-        
+
+        l2_lloss.append(tf.reduce_sum(tf.square(w)) * decay[_] / num_hidden[_])
         l2_loss += tf.reduce_sum(tf.square(w)) * decay[_] / num_hidden[_]
         layers.append(cur_layer)
-    return layers[-1], l2_loss, layers
+    return layers[-1], l2_loss, layers, l2_lloss
 
 
 def show_variables(domain, cl):
@@ -88,7 +89,7 @@ def tf_add_grad_noise(all_grads, temp, lr):
     for g, v in all_grads:
         if g is not None:
             g = g + tf.sqrt(lr) * temp * tf.random_normal(shape=v.get_shape(), 
-                mean=0, stddev=1.0/int(v.get_shape()[0]))
+                mean=0, stddev=1.0)
         noise_grads.append((g, v))
     return noise_grads
 
@@ -101,10 +102,10 @@ def build_model(num_hidden, decay, activation):
     lr_decay = tf.placeholder(dtype=tf.float32, shape=[])
 
     with tf.variable_scope('network'):
-        out, reg, layers = feed_forward(x, num_hidden, decay, activation, is_training)
+        out, reg, layers, regs = feed_forward(x, num_hidden, decay, activation, is_training)
 
     layer2_l2_loss = tf.reduce_mean(tf.reduce_mean(tf.square(layers[2] - layer2_copy), 1))
-    reinit_loss = layer2_l2_loss + reg
+    reinit_loss = layer2_l2_loss + regs[1]
 
     rmse_loss = tf.reduce_mean(tf.reduce_sum(tf.square(y - out), 1))
     loss = rmse_loss + reg
@@ -122,7 +123,7 @@ def build_model(num_hidden, decay, activation):
     all_op = tf.train.AdamOptimizer(args.lr * lr_decay)
     all_grads = all_op.compute_gradients(loss=loss, var_list=all_weights)
 
-    noise_grads = tf_add_grad_noise(all_grads, 1e-3, args.lr * lr_decay)
+    noise_grads = tf_add_grad_noise(all_grads, 1e-4, args.lr * lr_decay)
     all_train_op = all_op.apply_gradients(grads_and_vars=noise_grads)
 
     lst_op = tf.train.AdamOptimizer(args.lr * lr_decay)
@@ -132,20 +133,8 @@ def build_model(num_hidden, decay, activation):
     reinit_op = tf.train.AdamOptimizer(args.lr * lr_decay)
     reinit_grads = reinit_op.compute_gradients(loss=reinit_loss, 
         var_list=tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope='network/dense_1'))
-    reinit_grads = tf_add_grad_noise(reinit_grads, 1e-3, args.lr * lr_decay)
+    reinit_grads = tf_add_grad_noise(reinit_grads, 1e-4, args.lr * lr_decay)
     reinit_train_op = reinit_op.apply_gradients(grads_and_vars=reinit_grads)
-
-    grad_k0, grad_k1 = None, None
-    for g, v in all_grads:
-        if v.name == 'network/dense_0/kernel:0':
-            grad_k0 = g
-        elif v.name == 'network/dense_1/kernel:0':
-            grad_k1 = g
-        elif v.name == 'network/dense_0/bias:0':
-            grad_b0 = g
-        elif v.name == 'network/dense_1/kernel:0':
-            grad_b1 = g
-
 
     weight_dict = {}
     for item in all_weights:
@@ -170,7 +159,6 @@ def build_model(num_hidden, decay, activation):
             'rmse_loss': rmse_loss,
             'update': update_ops,
             'reg_loss': reg,
-            'grads': [grad_k0, grad_k1],
         },
         'lst':{
             'weights': all_weights,
@@ -182,14 +170,13 @@ def build_model(num_hidden, decay, activation):
         'reinit':{
             'train': reinit_train_op,
             'reinit_loss': reinit_loss,
-            'reg_loss': reg,
+            'reg_loss': regs[1],
             'layer2_l2_loss': layer2_l2_loss
         },
         'eval':{
             'weights': weight_dict,
             'rmse_loss': rmse_loss,
             'out': out,
-            'grads': [grad_k0, grad_k1]
         }
     }
 
@@ -239,7 +226,7 @@ if True:
         pp1.append(fetch[2])
     train_l2v = np.concatenate(pp1, 0)
 
-    for epoch in range(200):
+    for epoch in range(0):
         cur_idx = np.random.permutation(ndata_train)
         train_info = {}
         for t in tqdm(range(ndata_train // args.batch_size)):
@@ -361,11 +348,11 @@ if True:
             batch_y = train_y[batch_idx]
             mode = args.train
             ep_id = epoch
-            if epoch < 50:
+            if epoch < 20:
                 mode = 'lst'
             #print('training mode = {}'.format(mode))
             else:
-                ep_id -= 50
+                ep_id -= 20
             fetch = sess.run(targets[mode], feed_dict={ph['is_training']: True, 
                 ph['x']: batch_x, ph['y']: batch_y, ph['lr_decay']: args.decay**(ep_id)})
             update_loss(fetch, train_info)
