@@ -95,8 +95,7 @@ def tf_add_grad_noise(all_grads, temp, lr):
     for g, v in all_grads:
         if g is not None:
             g = g + tf.sqrt(lr) * temp * tf.random_normal(shape=v.get_shape(), 
-                mean=0, stddev=1.0),
-            #grad_norm.append(np.mean(g * g))
+                mean=0, stddev=1.0/int(v.get_shape()[0]))
         noise_grads.append((g, v))
     return noise_grads
 
@@ -144,12 +143,13 @@ def build_model(num_hidden, decay, activation):
     all_op = tf.train.AdamOptimizer(args.lr * lr_decay)
     all_grads = all_op.compute_gradients(loss=loss, var_list=all_weights)
     #show_grad_variables(all_grads, 'ALL')
-    noise_grads = tf_add_grad_noise(all_grads, 1e-4, args.lr * lr_decay)
+    noise_grads = tf_add_grad_noise(all_grads, 1e-2, args.lr * lr_decay)
     show_grad_variables(noise_grads, 'ALL')
     all_train_op = all_op.apply_gradients(grads_and_vars=noise_grads)
 
     lst_op = tf.train.AdamOptimizer(args.lr * lr_decay)
     lst_grads = lst_op.compute_gradients(loss=loss, var_list=last_layer_weights)
+    lst_grads = tf_add_grad_noise(lst_grads, 3e-2, args.lr * lr_decay)
     lst_train_op = lst_op.apply_gradients(grads_and_vars=lst_grads)
 
     reinit_op = tf.train.AdamOptimizer(args.lr * lr_decay)
@@ -162,14 +162,14 @@ def build_model(num_hidden, decay, activation):
     resample_theta1_grads = resample_theta1_op.compute_gradients(loss=resample_theta1_loss,
         var_list=dense_variables[0] + dense_variables[1])
     show_grad_variables(resample_theta1_grads, 'THETA1_RESAMPLE')
-    resample_theta1_grads = tf_add_grad_noise(resample_theta1_grads, 1e-4, args.lr * lr_decay)
+    resample_theta1_grads = tf_add_grad_noise(resample_theta1_grads, 3e-2, args.lr * lr_decay)
     resample_theta1_train_op = resample_theta1_op.apply_gradients(grads_and_vars=resample_theta1_grads)
 
     resample_theta2_op = tf.train.AdamOptimizer(args.lr * lr_decay)
     resample_theta2_grads = resample_theta2_op.compute_gradients(loss=resample_theta2_loss,
         var_list=dense_variables[1] + dense_variables[2])
     show_grad_variables(resample_theta2_grads, 'THETA2_RESAMPLE')
-    resample_theta2_grads = tf_add_grad_noise(resample_theta2_grads, 1e-4, args.lr * lr_decay)
+    resample_theta2_grads = tf_add_grad_noise(resample_theta2_grads, 3e-2, args.lr * lr_decay)
     resample_theta2_train_op = resample_theta2_op.apply_gradients(grads_and_vars=resample_theta2_grads)
    
     reset_lst_op = tf.variables_initializer(lst_op.variables())
@@ -298,7 +298,8 @@ if True:
     train_l2v = np.concatenate(pp1, 0)
     train_l3v = np.concatenate(pp2, 0)
 
-    candidate_mode = ['lst', 'resample_theta2', 'resample_theta1']
+    candidate_mode = ['lst', 'lst', 'lst', 'lst', 'resample_theta2', 'resample_theta1',
+	'resample_theta2', 'resample_theta1', 'resample_theta2', 'resample_theta1']
     # reinit
     for epoch in range(20):
         cur_idx = np.random.permutation(ndata_train)
@@ -450,14 +451,15 @@ if True:
             else:
                 ep_id -= 10
                 #ep_id = ep_id // 3
-                mode = candidate_mode[ep_id % 3]
+                mode = candidate_mode[ep_id % len(candidate_mode)]
                 #ep_id = ep_id // 3
                 #ep_id = (ep_id // 30) * 10 + (ep_id % 10)
                 #mode = candidate_mode[((epoch - 10) // 10) % 3]
             fetch = sess.run(targets[mode], feed_dict={ph['is_training']: True, 
                 ph['x']: batch_x, ph['y']: batch_y, ph['layer2_copy']: batch_l2, ph['layer3_copy']: batch_l3, ph['lr_decay']: args.decay**(ep_id)})
             update_loss(fetch, train_info)
-            #print(fetch['rmse_loss'])
+            if mode == 'resample2':
+                print(fetch['rmse_loss'])
 
         print_log('Train', epoch, train_info)
         pre_mode = mode

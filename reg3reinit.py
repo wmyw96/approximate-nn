@@ -89,7 +89,7 @@ def tf_add_grad_noise(all_grads, temp, lr):
     for g, v in all_grads:
         if g is not None:
             g = g + tf.sqrt(lr) * temp * tf.random_normal(shape=v.get_shape(), 
-                mean=0, stddev=1.0)
+                mean=0, stddev=1.0/int(v.get_shape()[0]))
         noise_grads.append((g, v))
     return noise_grads
 
@@ -105,7 +105,7 @@ def build_model(num_hidden, decay, activation):
         out, reg, layers, regs = feed_forward(x, num_hidden, decay, activation, is_training)
 
     layer2_l2_loss = tf.reduce_mean(tf.reduce_mean(tf.square(layers[2] - layer2_copy), 1))
-    reinit_loss = layer2_l2_loss + regs[1]
+    reinit_loss = layer2_l2_loss * 100 + regs[1]
 
     rmse_loss = tf.reduce_mean(tf.reduce_sum(tf.square(y - out), 1))
     loss = rmse_loss + reg
@@ -123,7 +123,7 @@ def build_model(num_hidden, decay, activation):
     all_op = tf.train.AdamOptimizer(args.lr * lr_decay)
     all_grads = all_op.compute_gradients(loss=loss, var_list=all_weights)
 
-    noise_grads = tf_add_grad_noise(all_grads, 1e-4, args.lr * lr_decay)
+    noise_grads = tf_add_grad_noise(all_grads, 1e-2, args.lr * lr_decay)
     all_train_op = all_op.apply_gradients(grads_and_vars=noise_grads)
 
     lst_op = tf.train.AdamOptimizer(args.lr * lr_decay)
@@ -226,7 +226,7 @@ if True:
         pp1.append(fetch[2])
     train_l2v = np.concatenate(pp1, 0)
 
-    for epoch in range(20):
+    for epoch in range(100):
         cur_idx = np.random.permutation(ndata_train)
         train_info = {}
         for t in tqdm(range(ndata_train // args.batch_size)):
