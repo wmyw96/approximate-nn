@@ -117,14 +117,14 @@ def build_model(num_hidden, decay, activation):
 
     layer2_l2_loss = tf.reduce_mean(tf.reduce_mean(tf.square(layers[2] - layer2_copy), 1))
     layer3_l2_loss = tf.reduce_mean(tf.reduce_mean(tf.square(layers[3] - layer3_copy), 1))
-    reinit_loss = layer2_l2_loss * lgm_l2 + layer3_l2_loss * lgm_l3_r + regs[1]
+    reinit_loss = layer2_l2_loss * lgm_l2 + layer3_l2_loss * 10.0 + regs[1]
 
     rmse_loss = tf.reduce_mean(tf.reduce_sum(tf.square(y - out), 1))
     loss = rmse_loss + reg
 
     # resample loss
     resample_theta1_loss = layer2_l2_loss * lgm_l2 + layer3_l2_loss * lgm_l3 + regs[0] + regs[1]
-    resample_theta2_loss = layer3_l2_loss * 10.0 + (regs[1] + regs[2])
+    resample_theta2_loss = layer3_l2_loss * 10.0 + (regs[1] + regs[2]) * 1.0
 
     all_weights = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope='network')
     show_variables('All Variables', all_weights)
@@ -152,25 +152,25 @@ def build_model(num_hidden, decay, activation):
     lst_grads = tf_add_grad_noise(lst_grads, 3e-2, args.lr * lr_decay)
     lst_train_op = lst_op.apply_gradients(grads_and_vars=lst_grads)
 
-    reinit_op = tf.train.AdamOptimizer(args.lr * lr_decay)
+    reinit_op = tf.train.AdamOptimizer(3e-4 * lr_decay)
     reinit_grads = reinit_op.compute_gradients(loss=reinit_loss, var_list=dense_variables[1])
     show_grad_variables(reinit_grads, 'REINIT')
-    reinit_grads = tf_add_grad_noise(reinit_grads, 1e-4, args.lr * lr_decay)
+    reinit_grads = tf_add_grad_noise(reinit_grads, 1e-4, 3e-4 * lr_decay)
     reinit_train_op = reinit_op.apply_gradients(grads_and_vars=reinit_grads)
-    
-    res_lr = 1e-4
+
     resample_theta1_op = tf.train.AdamOptimizer(1e-3 * lr_decay)
     resample_theta1_grads = resample_theta1_op.compute_gradients(loss=resample_theta1_loss,
         var_list=dense_variables[0] + dense_variables[1])
     show_grad_variables(resample_theta1_grads, 'THETA1_RESAMPLE')
     resample_theta1_grads = tf_add_grad_noise(resample_theta1_grads, 3e-2, 1e-3 * lr_decay)
     resample_theta1_train_op = resample_theta1_op.apply_gradients(grads_and_vars=resample_theta1_grads)
-
-    resample_theta2_op = tf.train.AdamOptimizer(res_lr * lr_decay)
+    
+    r2_lr = lr_decay * 1e-4
+    resample_theta2_op = tf.train.AdamOptimizer(r2_lr)
     resample_theta2_grads = resample_theta2_op.compute_gradients(loss=resample_theta2_loss,
         var_list=dense_variables[1] + dense_variables[2])
     show_grad_variables(resample_theta2_grads, 'THETA2_RESAMPLE')
-    resample_theta2_grads = tf_add_grad_noise(resample_theta2_grads, 3e-2, res_lr * lr_decay)
+    resample_theta2_grads = tf_add_grad_noise(resample_theta2_grads, 3e-2, r2_lr)
     resample_theta2_train_op = resample_theta2_op.apply_gradients(grads_and_vars=resample_theta2_grads)
    
     reset_lst_op = tf.variables_initializer(lst_op.variables())
@@ -224,12 +224,10 @@ def build_model(num_hidden, decay, activation):
             'resample_theta1_loss': resample_theta1_loss,
             'layer2_l2_loss': layer2_l2_loss,
             'layer3_l2_loss': layer3_l2_loss,
-            'rmse_loss': rmse_loss,
             'reg0_loss': regs[0],
             'reg1_loss': regs[1] / decay[1],
         },
         'resample_theta2':{
-            'rmse_loss': rmse_loss,
             'train': resample_theta2_train_op,
             'resample_theta2_loss': resample_theta2_loss,
             'layer3_l2_loss': layer3_l2_loss,
@@ -300,11 +298,13 @@ if True:
         pp2.append(fetch[3])
     train_l2v = np.concatenate(pp1, 0)
     train_l3v = np.concatenate(pp2, 0)
-
-    candidate_mode = ['lst', 'resample_theta2', 'resample_theta1',
-	'resample_theta2', 'resample_theta1']
+    theta1 = np.load('../../data/approximate-nn/logs/sin1d3-joint/epoch980/theta1.npy')
+    
+    candidate_mode = ['lst', 'resample_theta2']#, 'lst', 'lst', 'resample_theta2', 'resample_theta1',
+	#'resample_theta2', 'resample_theta1', 'resample_theta2', 'resample_theta1']
+    sess.run(targets['assign_weights']['weights_l0'], feed_dict={ph['kernel_l0']: theta1})
     # reinit
-    for epoch in range(00):
+    for epoch in range(0):
         cur_idx = np.random.permutation(ndata_train)
         train_info = {}
         for t in tqdm(range(ndata_train // args.batch_size)):
@@ -434,14 +434,25 @@ if True:
         for i in range(100):
             ax=plt.subplot(10,10,i+1)
             ax.scatter(np.squeeze(xp), layers_value[2][:, i], color='r', s=0.2+0.7*u_norm[i]/np.max(u_norm))
-            ax.axis('off')
+            ax.set_title('%.2f' % (u_norm[i]), fontsize=5)
+            #ax.scatter(theta1, theta2[:, i], color='blue', s=0.2+0.7*u_norm[i]/np.max(u_norm))
+            #ax.axis('off')
         plt.savefig(os.path.join(args.save_log_dir, 'theta2_samples_{}.png'.format(epoch)))
         plt.close()
         plt.clf()
 
-        cur_idx = np.random.permutation(ndata_train)
-        #train_info = {}
-        for u in range(5):
+        plt.figure(figsize=(16,16))
+        for i in range(100):
+            ax=plt.subplot(10,10,i+1)
+            #ax.scatter(np.squeeze(xp), layers_value[2][:, i], color='r', s=0.2+0.7*u_norm[i]/np.max(u_norm))
+            ax.scatter(theta1, theta2[:, i], color='blue', s=0.2+0.7*u_norm[i]/np.max(u_norm))
+            #ax.axis('off')
+        plt.savefig(os.path.join(args.save_log_dir, 'theta21_samples_{}.png'.format(epoch)))
+        plt.close()
+        plt.clf()
+
+        for p in range(5):
+            cur_idx = np.random.permutation(ndata_train)
             train_info = {}
             for t in tqdm(range(ndata_train // args.batch_size)):
                 batch_idx = cur_idx[t * args.batch_size: (t + 1) * args.batch_size]
@@ -453,6 +464,7 @@ if True:
                 ep_id = epoch
                 #if epoch < 5:
                 #    mode = 'lst'
+                #else:
                 if True:
                     #ep_id -= 5
                     #ep_id = ep_id // 3
@@ -464,7 +476,15 @@ if True:
                     ph['x']: batch_x, ph['y']: batch_y, ph['layer2_copy']: batch_l2, ph['layer3_copy']: batch_l3, ph['lr_decay']: args.decay**(ep_id)})
                 update_loss(fetch, train_info)
                 #if mode == 'resample_theta2':
-                #    print('rmse {}, l3d {}'.format(fetch['rmse_loss'], fetch['layer3_l2_loss']))
-        
+                #    print(fetch['layer3_l2_loss'])
+            l3l2l = []
+            for i in range(100):
+                batch_x = train_x[t * args.batch_size: (t + 1) * args.batch_size, :]
+                batch_y = train_y[t * args.batch_size: (t + 1) * args.batch_size]
+                batch_l3 = l3v[t * args.batch_size: (t + 1) * args.batch_size]
+                fetch = sess.run(targets['resample_theta2']['layer3_l2_loss'], feed_dict={ph['is_training']: False, 
+                    ph['x']: batch_x, ph['y']: batch_y, ph['layer3_copy']: batch_l3})
+                l3l2l.append(fetch)
             print_log('Train', epoch, train_info)
+            print('Layer3 L2 loss = {}'.format(np.mean(l3l2l)))
         pre_mode = mode
