@@ -163,7 +163,7 @@ def build_model(num_hidden, decay, activation):
     resample_theta1_grads = resample_theta1_op.compute_gradients(loss=resample_theta1_loss,
         var_list=dense_variables[0] + dense_variables[1])
     show_grad_variables(resample_theta1_grads, 'THETA1_RESAMPLE')
-    resample_theta1_grads = tf_add_grad_noise(resample_theta1_grads, 3e-2, 1e-3 * lr_decay)
+    resample_theta1_grads = tf_add_grad_noise(resample_theta1_grads, 1e-1, 1e-3 * lr_decay)
     resample_theta1_train_op = resample_theta1_op.apply_gradients(grads_and_vars=resample_theta1_grads)
 
     resample_theta2_op = tf.train.AdamOptimizer(res_lr * lr_decay)
@@ -301,8 +301,8 @@ if True:
     train_l2v = np.concatenate(pp1, 0)
     train_l3v = np.concatenate(pp2, 0)
 
-    candidate_mode = ['lst', 'resample_theta2', 'resample_theta1',
-	'resample_theta2', 'resample_theta1']
+    candidate_mode = ['lst', 'resample_theta2', 'resample_theta1'] #,
+#	'resample_theta2', 'resample_theta1']
     # reinit
     for epoch in range(00):
         cur_idx = np.random.permutation(ndata_train)
