@@ -170,7 +170,7 @@ def build_model(num_hidden, decay, activation):
     resample_theta2_grads = resample_theta2_op.compute_gradients(loss=resample_theta2_loss,
         var_list=dense_variables[1] + dense_variables[2])
     show_grad_variables(resample_theta2_grads, 'THETA2_RESAMPLE')
-    resample_theta2_grads = tf_add_grad_noise(resample_theta2_grads, 3e-2, r2_lr)
+    resample_theta2_grads = tf_add_grad_noise(resample_theta2_grads, 0, r2_lr)
     resample_theta2_train_op = resample_theta2_op.apply_gradients(grads_and_vars=resample_theta2_grads)
    
     reset_lst_op = tf.variables_initializer(lst_op.variables())
