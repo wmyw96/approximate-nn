@@ -32,6 +32,7 @@ parser.add_argument('--decay', default=0.95, type=float)
 parser.add_argument('--save_log_dir', default='logs/sin1d3-1000', type=str)
 parser.add_argument('--train', default='all', type=str)
 parser.add_argument('--save_weight_dir', type=str, default='../../data/approximate-nn/logs/sin1d3-joint')
+parser.add_argument('--regw', default=0.01, type=float)
 
 args = parser.parse_args()
 
@@ -64,17 +65,25 @@ def feed_forward(x, num_hidden, decay, activation, is_training):
         init = tf.random_normal_initializer(mean=0,stddev=1/np.sqrt(inp_dim))
         #if _ + 1 == depth:
         #    init = tf.zeros_initializer()
-        cur_layer = tf.layers.dense(layers[-1], num_hidden[_], name='dense_' + str(_), 
-                                        activation=activation[_], use_bias=True,
-                                        kernel_initializer=init)
+        #cur_layer = tf.layers.dense(layers[-1], num_hidden[_], name='dense_' + str(_), 
+        #                                activation=activation[_], use_bias=True,
+        #                                kernel_initializer=init)
+        with tf.variable_scope('dense_' + str(_), reuse=False):
+            w = tf.get_variable(name='kernel', shape=[inp_dim, num_hidden[_]], initializer=init)
+            b = tf.get_variable(name='bias', shape=[1, num_hidden[_]], initializer=tf.zeros_initializer())
+            cur_layer = tf.matmul(layers[-1], w) + b
+            if activation[_] is not None:
+                print('use activation {}'.format(activation[_]))
+                cur_layer = tf.nn.tanh(cur_layer)
         #cur_layer = cur_layer / inp_dim
         #if activation[_] is not None:
         #    cur_layer = activation[_](cur_layer)
         with tf.variable_scope('dense_' + str(_), reuse=True):
             w = tf.get_variable('kernel')           # [1, m]        
         inp_dim = num_hidden[_]
-         
-        reg = tf.reduce_sum(tf.square(w)) * decay[_] / num_hidden[_]
+        
+        reg = tf.reduce_mean(tf.reduce_sum(tf.square(w), 0))
+        #reg = tf.reduce_sum(tf.square(tf.reduce_mean(tf.abs(w), 1) * inp_dim)) / (inp_dim ** 2)
         #if _ == 1:
         #    reg = tf.reduce_sum(tf.abs(w)) * decay[_] / num_hidden[_]
         #else:
@@ -95,7 +104,8 @@ def tf_add_grad_noise(all_grads, temp, lr):
     noise_grads = []
     for g, v in all_grads:
         if g is not None and len(g.get_shape()) == 2:
-            g = g + tf.sqrt(lr) * temp * tf.random_normal(shape=v.get_shape(), 
+            g = g + tf.sqrt(lr) * temp * tf.random_normal(shape=v.get_shape(),
+            #g = g * int(v.get_shape()[0]) + tf.sqrt(lr) * temp * tf.random_normal(shape=v.get_shape(), 
                 mean=0, stddev=1.0/int(v.get_shape()[0]))
         noise_grads.append((g, v))
     return noise_grads
@@ -111,11 +121,8 @@ def build_model(num_hidden, decay, activation):
     with tf.variable_scope('network'):
         out, reg, layers, regs = feed_forward(x, num_hidden, decay, activation, is_training)
 
-    layer2_l2_loss = tf.reduce_mean(tf.reduce_mean(tf.square(layers[2] - layer2_copy), 1))
-    reinit_loss = layer2_l2_loss * 100 + regs[1]
-
     rmse_loss = tf.reduce_mean(tf.reduce_sum(tf.square(y - out), 1))
-    loss = rmse_loss + reg
+    loss = rmse_loss + reg * args.regw
 
     all_weights = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope='network')
     show_variables('All Variables', all_weights)
@@ -136,12 +143,6 @@ def build_model(num_hidden, decay, activation):
     lst_op = tf.train.AdamOptimizer(args.lr * lr_decay)
     lst_grads = lst_op.compute_gradients(loss=loss, var_list=last_layer_weights)
     lst_train_op = lst_op.apply_gradients(grads_and_vars=lst_grads)
-
-    reinit_op = tf.train.AdamOptimizer(args.lr * lr_decay)
-    reinit_grads = reinit_op.compute_gradients(loss=reinit_loss, 
-        var_list=tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope='network/dense_1'))
-    reinit_grads = tf_add_grad_noise(reinit_grads, 1e-4, args.lr * lr_decay)
-    reinit_train_op = reinit_op.apply_gradients(grads_and_vars=reinit_grads)
 
     weight_dict = {}
     for item in all_weights:
@@ -166,9 +167,6 @@ def build_model(num_hidden, decay, activation):
             'rmse_loss': rmse_loss,
             'update': update_ops,
             'reg_loss': reg,
-            'reg0_loss': regs[0],
-            'reg1_loss': regs[1] / decay[1],
-            'reg2_loss': regs[2] / decay[2]
         },
         'lst':{
             'weights': all_weights,
@@ -177,24 +175,20 @@ def build_model(num_hidden, decay, activation):
             'update': update_ops,       
             'reg_loss': reg
         },
-        'reinit':{
-            'train': reinit_train_op,
-            'reinit_loss': reinit_loss,
-            'reg_loss': regs[1],
-            'layer2_l2_loss': layer2_l2_loss
-        },
         'eval':{
             'weights': weight_dict,
             'rmse_loss': rmse_loss,
             'out': out,
         }
     }
-
+    for i in range(len(num_hidden)):
+        targets['all']['reg{}_loss'.format(i)] = regs[i]
+        #if i > 0:
+        #    targets['all']['reg{}_loss'.format(i)] /= decay[i]
     return ph, targets
 
 
 num_hidden, decay, activation = get_network_params()
-M = num_hidden[-2]
 ph, targets = build_model(num_hidden, decay, activation)
 
 if args.gpu > -1:
@@ -208,19 +202,17 @@ reg_func = cosc
 
 ndata_train = 100000
 train_x, train_y = cosc_data(-RANGE, RANGE, 1.0, ndata_train)
+nlayers = len(num_hidden)
 
 # scaling
 mean_x = np.mean(train_x, 0, keepdims=True)
 std_x = np.std(train_x, 0, keepdims=True)
 train_x = (train_x - mean_x) / std_x
 
-n2 = num_hidden[-2]
-n1 = num_hidden[-3]
-
 sess.run(tf.global_variables_initializer())
 
 
-def get_norm(u, axis=-1):
+def get_norm(u, axis=1):
     return np.sqrt(np.sum(np.square(u), axis))
 
 
@@ -253,7 +245,6 @@ if True:
 
 
     for epoch in range(args.num_epoches):
-        #pp1, pp2 = [], []
         test_info = {}
         for t in tqdm(range(ndata_train // args.batch_size)):
             batch_x = train_x[t * args.batch_size: (t + 1) * args.batch_size, :]
@@ -264,8 +255,6 @@ if True:
             update_loss(fetch, test_info)
             fetch = sess.run(targets['layers'], feed_dict={ph['is_training']: False, 
                 ph['x']: batch_x, ph['y']: batch_y, ph['lr_decay']: args.decay**(epoch)})
-            #pp1.append(fetch[1])
-            #pp2.append(fetch[2])
 
         rmse.append(np.mean(test_info['rmse_loss']))
         print_log('Test', epoch, test_info)
@@ -278,7 +267,7 @@ if True:
             ph['x']: xx})
 
         layers_value = sess.run(targets['layers'], feed_dict={ph['is_training']: True, ph['x']: xx})
-        for i in range(3):
+        for i in range(nlayers):
             layer_i = layers_value[i]     #  [B, m]
             layer_norm = np.sqrt(np.sum(np.square(layer_i), 1))
             print('Dist of layer {} norm: mean = {}, std = {}'.format(i, np.mean(layer_norm), np.std(layer_norm)))
@@ -293,74 +282,36 @@ if True:
         plt.clf()
 
         # distribution of u
-        u = sess.run(targets['eval']['weights']['network/dense_2/kernel:0'])    # [1000, 1]
-        theta2 = sess.run(targets['eval']['weights']['network/dense_1/kernel:0'])    # [1000, 1]
-        theta1 = sess.run(targets['eval']['weights']['network/dense_0/kernel:0'])    # [1000, 1]
+        u = sess.run(targets['eval']['weights']['network/dense_{}/kernel:0'.format(nlayers - 1)])    # [1000, 1]
+        u_norm = get_norm(u, 1)
+        print('Distribution of u norm: {} +/- {}'.format(np.mean(u_norm), np.std(u_norm)))
+        print(len(layers_value))        
+        for layer_id in range(nlayers - 1): 
+            thetai = sess.run(targets['eval']['weights']['network/dense_{}/kernel:0'.format(layer_id)])
+            thetan = sess.run(targets['eval']['weights']['network/dense_{}/kernel:0'.format(layer_id + 1)])
+            thetan_norm = get_norm(thetan, 1)
+            plt.figure(figsize=(8,8))
+            lvi = layers_value[layer_id + 1]
+            for i in range(100):
+                ax=plt.subplot(10,10,i+1)
+                ax.scatter(np.squeeze(xp), lvi[:, i], color='r', s=0.2+0.7*thetan_norm[i]/np.max(thetan_norm))
+                ax.set_title('Sample %d: %.2f' % (i, u_norm[i]), fontsize=5)
+                ax.axis('off')
+            plt.savefig(os.path.join(args.save_log_dir, 'f_{}_samples_{}.png'.format(layer_id, epoch)))
+            plt.close()
+            plt.clf()
         
-        if epoch % 20 == 0:
-            epoch_dir = os.path.join(args.save_weight_dir, 'epoch' + str(epoch))
-            if not os.path.exists(epoch_dir):
-                os.mkdir(epoch_dir)
-            np.save(os.path.join(epoch_dir, 'theta1.npy'), theta1)
-            print('theta2_fv shape = {}'.format(np.transpose(layers_value[2]).shape))
-            np.save(os.path.join(epoch_dir, 'theta2_fv.npy'), np.transpose(layers_value[2]))
-            np.save(os.path.join(epoch_dir, 'theta2.npy'), theta2)
-        
-        print('u shape = {}'.format(u.shape))
-        print('theta2 shape = {}'.format(theta2.shape))
-        print('theta1 shape = {}'.format(theta1.shape))
-
-        u_norm = get_norm(u) * np.sqrt(n2)
-        theta2_norm = get_norm(theta2) * np.sqrt(n1 / n2)
-        theta1 = np.squeeze(theta1)
-
-        print('Dist of u_norm: mean = {}, std = {}'.format(np.mean(u_norm), np.std(u_norm)))
-        print('Dist of theta2_norm: mean = {}, std = {}'.format(np.mean(theta2_norm), np.std(theta2_norm)))        
-        print('Dist of theta1: mean = {}, std = {}'.format(np.mean(theta1), np.std(theta1)))
-
-        print('Theta2 Norm Mean = {}'.format(np.mean(get_norm(theta2, 0))))        
-        plt.figure(figsize=(12, 4))
-        ax1 = plt.subplot(1, 3, 1)
-        ax1.hist(u, bins=30, normed=True, color="#FF0000", alpha=.9)
-        ax2 = plt.subplot(1, 3, 2)
-        ax2.hist(theta2_norm, bins=30, normed=True, color="#FF0000", alpha=.9)
-        ax3 = plt.subplot(1, 3, 3)
-        ax3.hist(theta1, bins=30, normed=True, color="#FF0000", alpha=.9)
-        plt.savefig(os.path.join(args.save_log_dir, 'marginal_{}.png'.format(epoch)))
-        plt.close()
-        plt.clf()
-
-        # joint distribution
-        plt.figure(figsize=(6,6))
-        origin = sns.jointplot(x=get_norm(theta2, 0), y=np.squeeze(u)*np.sqrt(n2), kind='scatter', color='red')
-        origin.savefig(os.path.join(args.save_log_dir, "ut2n_origin_{}.png".format(epoch)))
-        plt.close()
-        plt.clf()
-
-        plt.figure(figsize=(6,6))
-        origin = sns.jointplot(x=theta1, y=theta2_norm, kind='scatter', color='red')
-        origin.savefig(os.path.join(args.save_log_dir, "t1t2n_origin_{}.png".format(epoch)))
-        plt.close()
-        plt.clf()
-
-        plt.figure(figsize=(8,8))
-        for i in range(100):
-            ax=plt.subplot(10,10,i+1)
-            ax.scatter(np.squeeze(xp), layers_value[2][:, i], color='r', s=0.2+0.7*u_norm[i]/np.max(u_norm))
-            ax.set_title('Sample %d: %.2f' % (i, u_norm[i]), fontsize=5)
-            ax.axis('off')
-        plt.savefig(os.path.join(args.save_log_dir, 'theta2_samples_{}.png'.format(epoch)))
-        plt.close()
-        plt.clf()
-        
-        plt.figure(figsize=(8,8))
-        plt.scatter(x=get_norm(theta2, 0), y=np.squeeze(u)*np.sqrt(n2), color='red', s=0.2)
-        for i in range(100):
-            plt.text(get_norm(theta2, 0)[i], np.squeeze(u)[i]*np.sqrt(n2), str(i), color='skyblue', 
-                 fontdict={'weight': 'bold', 'size': 7})
-        plt.savefig(os.path.join(args.save_log_dir, 'theta2_index_{}.png'.format(epoch)))
-        plt.close()
-        plt.clf()
+            plt.figure(figsize=(8,8))
+            plt.scatter(x=get_norm(thetai, 0), y=get_norm(thetan, 1), color='red', s=0.2)
+            for i in range(100):
+                plt.text(get_norm(thetai, 0)[i], get_norm(thetan, 1)[i], str(i), color='skyblue', 
+                     fontdict={'weight': 'bold', 'size': 7})
+            plt.savefig(os.path.join(args.save_log_dir, 'theta{}_index_{}.png'.format(layer_id, epoch)))
+            plt.close()
+            plt.clf()
+            
+            thetanorm = get_norm(thetai, 0)
+            print('Distribution of theta {} norm: {} +/- {}'.format(layer_id, np.mean(thetanorm), np.std(thetanorm)))
 
         cur_idx = np.random.permutation(ndata_train)
         train_info = {}
@@ -370,11 +321,6 @@ if True:
             batch_y = train_y[batch_idx]
             mode = args.train
             ep_id = epoch
-            #if epoch < 0:
-            #    mode = 'lst'
-            #print('training mode = {}'.format(mode))
-            #else:
-            #    ep_id -= 20
             fetch = sess.run(targets[mode], feed_dict={ph['is_training']: True, 
                 ph['x']: batch_x, ph['y']: batch_y, ph['lr_decay']: args.decay**(ep_id)})
             update_loss(fetch, train_info)
