@@ -1,0 +1,14 @@
+0.01, 1.0:
+
+    noise-e 1e-3: 0.000572, 0.00993, 0.038, 0.914
+    noise-e 1e-4: 0.000288, 0.00288, 0.036, 0.372
+    noise-w 1e-1: 0.000285, 0.00364, 0.039, 0.410
+    noise-w 1e-2: 0.000171, 0.00307, 0.039, 0.350
+
+    reinit-full-w 1e-2: 0.000366, 0.00296, 0.038, 0.340
+
+
+CUDA_VISIBLE_DEVICES=2 python reg3r2.py --weight_decay 0.0,0.01,1.0 --num_hidden 1000,1000,1 --save_log_dir logs/sin1d3-1000-alt-l --train all --lr 1e-3 --decay 1.0
+
+
+CUDA_VISIBLE_DEVICES=2 python reg3part.py --weight_decay 0.0,0.01,1.0 --num_hidden 1000,1000,1 --save_log_dir logs/sin1d3-1000-part --train all --lr 1e-3 --decay 1.0
