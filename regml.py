@@ -32,6 +32,7 @@ parser.add_argument('--decay', default=0.95, type=float)
 parser.add_argument('--save_log_dir', default='logs/sin1d3-1000', type=str)
 parser.add_argument('--train', default='all', type=str)
 parser.add_argument('--save_weight_dir', type=str, default='../../data/approximate-nn/logs/sin1d3-joint')
+parser.add_argument('--regw', default=0.01, type=float)
 
 args = parser.parse_args()
 
@@ -61,7 +62,7 @@ def feed_forward(x, num_hidden, decay, activation, is_training):
     inp_dim = int(x.get_shape()[-1])
     for _ in range(depth):
         print('layer {}, num hidden = {}, activation = {}, decay = {}'.format(_, num_hidden[_], activation[_], decay[_]))
-        init = tf.random_normal_initializer(mean=0,stddev=np.sqrt(inp_dim))
+        init = tf.random_normal_initializer(mean=0,stddev=1/np.sqrt(inp_dim))
         #if _ + 1 == depth:
         #    init = tf.zeros_initializer()
         #cur_layer = tf.layers.dense(layers[-1], num_hidden[_], name='dense_' + str(_), 
@@ -70,7 +71,7 @@ def feed_forward(x, num_hidden, decay, activation, is_training):
         with tf.variable_scope('dense_' + str(_), reuse=False):
             w = tf.get_variable(name='kernel', shape=[inp_dim, num_hidden[_]], initializer=init)
             b = tf.get_variable(name='bias', shape=[1, num_hidden[_]], initializer=tf.zeros_initializer())
-            cur_layer = tf.matmul(layers[-1], w) / inp_dim + b #np.sqrt(inp_dim) + b
+            cur_layer = tf.matmul(layers[-1], w) + b
             if activation[_] is not None:
                 print('use activation {}'.format(activation[_]))
                 cur_layer = tf.nn.tanh(cur_layer)
@@ -81,7 +82,8 @@ def feed_forward(x, num_hidden, decay, activation, is_training):
             w = tf.get_variable('kernel')           # [1, m]        
         inp_dim = num_hidden[_]
         
-        reg = tf.reduce_mean(tf.square(w)) * decay[_] / num_hidden[_]
+        reg = tf.reduce_mean(tf.reduce_sum(tf.square(w), 0))
+        #reg = tf.reduce_sum(tf.square(tf.reduce_mean(tf.abs(w), 1) * inp_dim)) / (inp_dim ** 2)
         #if _ == 1:
         #    reg = tf.reduce_sum(tf.abs(w)) * decay[_] / num_hidden[_]
         #else:
@@ -102,7 +104,8 @@ def tf_add_grad_noise(all_grads, temp, lr):
     noise_grads = []
     for g, v in all_grads:
         if g is not None and len(g.get_shape()) == 2:
-            g = g * int(v.get_shape()[0]) + tf.sqrt(lr) * temp * tf.random_normal(shape=v.get_shape(), 
+            g = g + tf.sqrt(lr) * temp * tf.random_normal(shape=v.get_shape(),
+            #g = g * int(v.get_shape()[0]) + tf.sqrt(lr) * temp * tf.random_normal(shape=v.get_shape(), 
                 mean=0, stddev=1.0/int(v.get_shape()[0]))
         noise_grads.append((g, v))
     return noise_grads
@@ -119,7 +122,7 @@ def build_model(num_hidden, decay, activation):
         out, reg, layers, regs = feed_forward(x, num_hidden, decay, activation, is_training)
 
     rmse_loss = tf.reduce_mean(tf.reduce_sum(tf.square(y - out), 1))
-    loss = rmse_loss + reg
+    loss = rmse_loss + reg * args.regw
 
     all_weights = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope='network')
     show_variables('All Variables', all_weights)
@@ -134,7 +137,7 @@ def build_model(num_hidden, decay, activation):
     all_op = tf.train.AdamOptimizer(args.lr * lr_decay)
     all_grads = all_op.compute_gradients(loss=loss, var_list=all_weights)
 
-    noise_grads = tf_add_grad_noise(all_grads, 1e-1, args.lr * lr_decay)
+    noise_grads = tf_add_grad_noise(all_grads, 1e-3, args.lr * lr_decay)
     all_train_op = all_op.apply_gradients(grads_and_vars=noise_grads)
 
     lst_op = tf.train.AdamOptimizer(args.lr * lr_decay)
@@ -180,13 +183,12 @@ def build_model(num_hidden, decay, activation):
     }
     for i in range(len(num_hidden)):
         targets['all']['reg{}_loss'.format(i)] = regs[i]
-        if i > 0:
-            targets['all']['reg{}_loss'.format(i)] /= decay[i]
+        #if i > 0:
+        #    targets['all']['reg{}_loss'.format(i)] /= decay[i]
     return ph, targets
 
 
 num_hidden, decay, activation = get_network_params()
-M = num_hidden[-2]
 ph, targets = build_model(num_hidden, decay, activation)
 
 if args.gpu > -1:
@@ -207,13 +209,10 @@ mean_x = np.mean(train_x, 0, keepdims=True)
 std_x = np.std(train_x, 0, keepdims=True)
 train_x = (train_x - mean_x) / std_x
 
-n2 = num_hidden[-2]
-n1 = num_hidden[-3]
-
 sess.run(tf.global_variables_initializer())
 
 
-def get_norm(u, axis=-1):
+def get_norm(u, axis=1):
     return np.sqrt(np.sum(np.square(u), axis))
 
 
