@@ -14,6 +14,7 @@ import matplotlib.pyplot as plt
 from dataset import *
 from scipy.stats import kde
 import seaborn as sns
+from sklearn import manifold
 from tensorflow.python.training.moving_averages import assign_moving_average
 
 '''
@@ -127,6 +128,7 @@ def build_model(num_hidden, decay, activation):
     with tf.variable_scope('network'):
         out, reg, layers, regs = feed_forward(x, num_hidden, decay, activation, is_training)
 
+    #print(out.get_shape(), onehot_y.get_shape())
     log_y = tf.nn.softmax_cross_entropy_with_logits(labels=onehot_y, logits=out, dim=1)
 
     acc_loss = tf.reduce_mean(tf.cast(tf.equal(tf.argmax(out, 1), y), tf.float32))
@@ -224,7 +226,7 @@ test_labels = test_labels.reshape(-1)
 
 # scaling
 mean_x = np.mean(train_images, 0, keepdims=True)
-std_x = np.std(train_images, 0, keepdims=True)
+std_x = np.std(train_images, 0, keepdims=True) + 1e-9
 train_images = (train_images - mean_x) / std_x
 test_images = (test_images - mean_x) / std_x
 
@@ -243,10 +245,66 @@ vis_x = test_images[:400, :]
 vis_y = test_labels[:400]
 tsne = manifold.TSNE(n_components=2, init='pca', random_state=501)
 vis_x_tsne = tsne.fit_transform(vis_x)
-vis_x_min, vis_x_max = vis_x_tsne.min(0), vis_x_tsne.max(0)
-vis_x_norm = (vis_x_tsne - vis_x_min) / (vis_x_max - vis_x_min)
+vis_x_mean, vis_x_std = vis_x_tsne.mean(0), vis_x_tsne.std(0)
+vis_x_norm = (vis_x_tsne - vis_x_mean) / (vis_x_std)
 
 #[0, 1]
+color_set = ['red', 'blue', 'yellow', 'green', 'gray', 'black', 'orange', 'purple', 'pink', 'skyblue']
+plt.figure(figsize=(8,8))
+for i in range(400):
+    plt.text(vis_x_norm[i, 0], vis_x_norm[i, 1], str(vis_y[i]), color=color_set[vis_y[i]], 
+        fontdict={'weight': 'bold', 'size': 7})
+plt.xlim(-2, 2)
+plt.ylim(-2, 2)
+plt.savefig(os.path.join(args.save_log_dir, 'embed.png'))
+plt.close()
+plt.clf()
+#[0, 1]
+
+
+def kernel_regression(dx, dy, dv):
+    # auxiliary functions
+    def grid(x_l, x_r, x_steps, y_l, y_r, y_steps):
+        delta_x = (x_r - x_l) / (x_steps - 1)
+        delta_y = (y_r - y_l) / (y_steps - 1)
+        data = np.zeros((x_steps * y_steps, 2))
+        n = 0
+        for i in range(x_steps):
+            for j in range(y_steps):
+                data[n, :] = np.array([delta_x * i + x_l, delta_y * j + y_l])
+                n += 1
+        return data
+
+    def togrid(x, nx, ny):
+        data = np.zeros((nx, ny))
+        n = 0
+        for i in range(nx):
+            for j in range(ny):
+                data[j, i] = x[n]
+                n += 1
+        return data
+
+    xl = -2
+    xr = 2
+    data = grid(xl, xr, 20, xl, xr, 20)
+    sigma = (xr - xl) / 20.0
+
+    x = np.ogrid[xl:xr:20j]
+    y = np.ogrid[xl:xr:20j]
+    vset = {}
+    v = np.ones((20, 20)) * -1
+    for i in range(len(dx)):
+        cx = int((dx[i] + 2) / sigma)
+        cy = int((dy[i] + 2) / sigma)
+        if (cx, cy) in vset:
+            vset[(cx, cy)].append(dv[i])
+        else:
+            vset[(cx, cy)] = [dv[i]]
+    for i in range(20):
+        for j in range(20):
+            if (i, j) in vset:
+                v[i, j] = np.mean(vset[(i, j)])
+    return x, y, v
 
 if True:
     accs = []
@@ -254,8 +312,8 @@ if True:
     for epoch in range(args.num_epoches):
         test_info = {}
         for t in tqdm(range(ndata_test // args.batch_size)):
-            batch_x = test_x[t * args.batch_size: (t + 1) * args.batch_size, :]
-            batch_y = test_y[t * args.batch_size: (t + 1) * args.batch_size]
+            batch_x = test_images[t * args.batch_size: (t + 1) * args.batch_size, :]
+            batch_y = test_labels[t * args.batch_size: (t + 1) * args.batch_size]
 
             fetch = sess.run(targets['eval'], feed_dict={ph['is_training']: False, 
                 ph['x']: batch_x, ph['y']: batch_y})
@@ -284,9 +342,12 @@ if True:
             plt.figure(figsize=(8,8))
             lvi = layers_value[layer_id + 1]
             for i in range(100):
+            #if True:
+                #i = 0
                 ax=plt.subplot(10,10,i+1)
-                ax.contourf(vis_x_norm[:, 0], vis_x_norm[:, 1], lvi[:, i], 20)
-                ax.set_title('Sample %d: %.2f' % (i, u_norm[i]), fontsize=5)
+                px, py, pv = kernel_regression(vis_x_norm[:, 0], vis_x_norm[:, 1], lvi[:, i])
+                ax.contourf(px, py, pv, 20)                
+                ax.set_title('Sample %d: %.2f, %.2f, %.2f' % (i, u_norm[i], np.mean(pv), np.std(pv)), fontsize=7)
                 ax.axis('off')
             plt.savefig(os.path.join(args.save_log_dir, 'f_{}_samples_{}.png'.format(layer_id, epoch)))
             plt.close()
@@ -308,8 +369,8 @@ if True:
         train_info = {}
         for t in tqdm(range(ndata_train // args.batch_size)):
             batch_idx = cur_idx[t * args.batch_size: (t + 1) * args.batch_size]
-            batch_x = train_x[batch_idx, :]
-            batch_y = train_y[batch_idx]
+            batch_x = train_images[batch_idx, :]
+            batch_y = train_labels[batch_idx]
             mode = args.train
             ep_id = epoch
             fetch = sess.run(targets[mode], feed_dict={ph['is_training']: True, 

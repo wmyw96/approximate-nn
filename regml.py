@@ -137,7 +137,7 @@ def build_model(num_hidden, decay, activation):
     all_op = tf.train.AdamOptimizer(args.lr * lr_decay)
     all_grads = all_op.compute_gradients(loss=loss, var_list=all_weights)
 
-    noise_grads = tf_add_grad_noise(all_grads, 1e-3, args.lr * lr_decay)
+    noise_grads = tf_add_grad_noise(all_grads, 1e-1, args.lr * lr_decay)
     all_train_op = all_op.apply_gradients(grads_and_vars=noise_grads)
 
     lst_op = tf.train.AdamOptimizer(args.lr * lr_decay)
