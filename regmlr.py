@@ -91,10 +91,13 @@ def feed_forward(x, num_hidden, decay, activation, is_training):
 
         pre_pnorm_ = tf.expand_dims(pre_pnorm, 1)
         p_norm_ = tf.expand_dims(p_norm, 0)
+        print('Norm Shape: PRE = {}, CUR = {}'.format(pre_pnorm.get_shape(), p_norm.get_shape()))
         reg_resample = \
-            tf.reduce_sum(tf.square(tf.reduce_mean(tf.abs(w) * p_norm_, 1) * inp_dim) / pre_pnorm) / (inp_dim ** 2)
+            tf.reduce_sum(tf.square(tf.reduce_mean(tf.abs(w / pre_pnorm_) * p_norm_, 1) * inp_dim) * pre_pnorm) / (inp_dim ** 2)
         l2_lloss.append(reg)
         l2_loss += reg
+
+        pre_pnorm = p_norm
 
         l2_lloss_rsp.append(reg_resample)
         l2_loss_rsp += reg_resample
@@ -126,7 +129,7 @@ def build_model(num_hidden, decay, activation):
     lr_decay = tf.placeholder(dtype=tf.float32, shape=[])
 
     with tf.variable_scope('network'):
-        out, reg, layers, regs, reg_rsp, regs_rsp, ip_weights = \
+        out, reg, layers, regs, reg_rsp, regs_rsp, ip_ws = \
             feed_forward(x, num_hidden, decay, activation, is_training)
 
     rmse_loss = tf.reduce_mean(tf.reduce_sum(tf.square(y - out), 1))
@@ -145,9 +148,11 @@ def build_model(num_hidden, decay, activation):
     noise_grads = tf_add_grad_noise(all_grads, 1e-1, args.lr * lr_decay)
     all_train_op = all_op.apply_gradients(grads_and_vars=noise_grads)
 
-    rsp_op = tf.train.AdamOptimizer(args.lr * lr_decay)
-    rsp_grads = all_op.compute_gradients(loss=rsp_loss, var_list=ip_weights)
-    rsp_train_op = all_op.apply_gradients(grads_and_vars=rsp_grads)
+    rsp_op = tf.train.AdamOptimizer(1e-3 * lr_decay)
+    rsp_grads = rsp_op.compute_gradients(loss=rsp_loss, var_list=ip_weights)
+    rsp_train_op = rsp_op.apply_gradients(grads_and_vars=rsp_grads)
+    rsp_clear = tf.variables_initializer(rsp_op.variables() + ip_weights)
+    show_variables('Resample Variables', rsp_op.variables())
 
     weight_dict = {}
     for item in all_weights:
@@ -183,23 +188,16 @@ def build_model(num_hidden, decay, activation):
             'rsp_train': rsp_train_op,
             'rsp_loss': rsp_loss,
             'rmse_loss': rmse_loss,
-            'update': update_ops,
             'reg_loss': reg,
-        },
-        'lst':{
-            'weights': all_weights,
-            'train': lst_train_op,
-            'rmse_loss': rmse_loss,
-            'update': update_ops,       
-            'reg_loss': reg
         },
         'eval':{
             'weights': weight_dict,
             'rmse_loss': rmse_loss,
             'out': out,
-            'ip_weights': ip_weights
+            'ip_weights': ip_ws
         },
-        'assign': assign
+        'assign': assign,
+        'clear': rsp_clear
     }
     for i in range(len(num_hidden)):
         targets['all']['reg{}_loss'.format(i)] = regs[i]
@@ -260,22 +258,44 @@ def add_noise(theta, decay=1.0):
 def resample_nn(sess, ph, targets, nlayers):
     weights = sess.run(targets['eval']['weights'])
     ip = sess.run(targets['eval']['ip_weights'])
+    rsp_loss, reg_loss = sess.run([targets['all']['rsp_loss'], targets['all']['reg_loss']])
+    print('BEFORE: RSP LOSS = {}, REG_LOSS = {}'.format(rsp_loss, reg_loss))
+    rsp0_loss, reg0_loss = sess.run([targets['all']['reg0_loss_rsp'], targets['all']['reg0_loss']])
+    rsp1_loss, reg1_loss = sess.run([targets['all']['reg1_loss_rsp'], targets['all']['reg1_loss']])
+    rsp2_loss, reg2_loss = sess.run([targets['all']['reg2_loss_rsp'], targets['all']['reg2_loss']])
+    rsp3_loss, reg3_loss = sess.run([targets['all']['reg3_loss_rsp'], targets['all']['reg3_loss']])
+    print('BEFORE: Layer 0 {}, {}; Layer 1 {}, {}; Layer 2 {}, {}; Layer 3 {}, {}'.\
+        format(rsp0_loss, reg0_loss, rsp1_loss, reg1_loss, rsp2_loss, reg2_loss, rsp3_loss, reg3_loss))
+
     kernels = []
     biases = []
     for i in range(nlayers):
         kernels.append(weights['network/nn/dense_{}/kernel:0'.format(i)])
         biases.append(weights['network/nn/dense_{}/bias:0'.format(i)])
-    for i in range(nlayers):
+    for ii in range(nlayers - 1):
+#    if True:
+        #ii = 0
+        i = nlayers - 2 - ii
         curlayer = np.concatenate([kernels[i], biases[i]], 0)
-        curlayer_n, kernels[i + 1] = resample(curlayer, kernels[i + 1], ip[i])
+        print('IP weight sum in layer {}: {}'.format(i, np.sum(ip[i])))
+        curlayer_n, kernels[i + 1] = resample(curlayer, kernels[i + 1], ip[i] / curlayer.shape[1])
         kernels[i] = curlayer_n[:-1, :]
-        bias[i] = curlayer_n[-1, :]
+        biases[i] = np.expand_dims(curlayer_n[-1, :], 0)
     feed = {}
     for i in range(nlayers):
         feed[ph['dense_{}_kernel'.format(i)]] = kernels[i]
         feed[ph['dense_{}_bias'.format(i)]] = biases[i]
     sess.run(targets['assign'], feed)
-
+    sess.run(targets['clear'])
+    reg_loss, reg0_loss, reg1_loss, reg2_loss, reg3_loss = sess.run([targets['all']['reg_loss'], targets['all']['reg0_loss'], 
+        targets['all']['reg1_loss'], targets['all']['reg2_loss'], targets['all']['reg3_loss']])
+    print('AFTER: REG_LOSS = {}'.format(reg_loss))
+    print('AFTER: Layer 0 = {}, Layer 1 = {}, Layer 2 = {}, Layer 3 = {}'.format(reg0_loss, reg1_loss, reg2_loss, reg3_loss))
+    ip = sess.run(targets['eval']['ip_weights'])
+    #print(ip[0])
+    reg_loss, reg0_loss, reg1_loss, reg2_loss, reg3_loss = sess.run([targets['all']['rsp_loss'], targets['all']['reg0_loss_rsp'],
+        targets['all']['reg1_loss_rsp'], targets['all']['reg2_loss_rsp'], targets['all']['reg3_loss_rsp']])
+    print('AFTER: Layer 0 = {}, Layer 1 = {}, Layer 2 = {}, Layer 3 = {}'.format(reg0_loss, reg1_loss, reg2_loss, reg3_loss))
 
 if True:
     rmse = []
@@ -339,10 +359,11 @@ if True:
             thetan_norm = get_norm(thetan, 1)
             plt.figure(figsize=(8,8))
             lvi = layers_value[layer_id + 1]
+            pweight = sess.run(targets['eval']['ip_weights'])[layer_id]
             for i in range(100):
                 ax=plt.subplot(10,10,i+1)
                 ax.scatter(np.squeeze(xp), lvi[:, i], color='r', s=0.2+0.7*thetan_norm[i]/np.max(thetan_norm))
-                ax.set_title('Sample %d: %.2f' % (i, u_norm[i]), fontsize=5)
+                ax.set_title('Sample %d: %.2f' % (i, pweight[i]), fontsize=5)
                 ax.axis('off')
             plt.savefig(os.path.join(args.save_log_dir, 'f_{}_samples_{}.png'.format(layer_id, epoch)))
             plt.close()
@@ -360,21 +381,33 @@ if True:
             thetanorm = get_norm(thetai, 0)
             print('Distribution of theta {} norm: {} +/- {}'.format(layer_id, np.mean(thetanorm), np.std(thetanorm)))
 
-        if epoch % 10 == 0:
-            resample_nn(sess, ph, targets, nlayers)
+        do_rsp = False
+        if epoch <= 50:
+            if epoch % 10 == 0:
+                resample_nn(sess, ph, targets, nlayers)
+                do_rsp = True
+        else:
+            if epoch % 100 == 0:
+                resample_nn(sess, ph, targets, nlayers)
+                do_rsp = True
         
-        cur_idx = np.random.permutation(ndata_train)
-        train_info = {}
-        for t in tqdm(range(ndata_train // args.batch_size)):
-            batch_idx = cur_idx[t * args.batch_size: (t + 1) * args.batch_size]
-            batch_x = train_x[batch_idx, :]
-            batch_y = train_y[batch_idx]
-            mode = args.train
-            ep_id = epoch
-            fetch = sess.run(targets[mode], feed_dict={ph['is_training']: True, 
-                ph['x']: batch_x, ph['y']: batch_y, ph['lr_decay']: args.decay**(ep_id)})
-            update_loss(fetch, train_info)
-
-            #print(fetch['rmse_loss'])
-
-        print_log('Train', epoch, train_info)
+        if not do_rsp:
+            cur_idx = np.random.permutation(ndata_train)
+            train_info = {}
+            for t in tqdm(range(ndata_train // args.batch_size)):
+                batch_idx = cur_idx[t * args.batch_size: (t + 1) * args.batch_size]
+                batch_x = train_x[batch_idx, :]
+                batch_y = train_y[batch_idx]
+                mode = args.train
+                ep_id = epoch
+                fetch = sess.run(targets[mode], feed_dict={ph['is_training']: True, 
+                    ph['x']: batch_x, ph['y']: batch_y, ph['lr_decay']: args.decay**(ep_id)})
+                update_loss(fetch, train_info)
+            
+            if (epoch + 1) % 10 == 0:
+                for tt in range(10000):
+                    #if tt % 100 == 0:
+                    fetch = sess.run(targets['all']['rsp_train'], feed_dict={ph['lr_decay']: 1.0})
+                    #if tt % 100 == 0:
+                print('Resample REG LOSS = {}'.format(sess.run(targets['all']['rsp_loss'])))
+            print_log('Train', epoch, train_info)
