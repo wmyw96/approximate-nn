@@ -19,7 +19,7 @@ from tensorflow.python.training.moving_averages import assign_moving_average
 
 '''
 2019-10-04
-python mnistml.py --num_hidden 1000,1000,1 --weight_decay 0,0,0 --regw 0.01 --save_log_dir ../../data/approximate-nn/logs/mnist-l21-3l-n1 --lr 1e-4 --decay 1.0
+CUDA_VISIBLE_DEVICES=3 python mnistml.py --num_hidden 1000,1000,1 --weight_decay 0,0,0 --regw 0.01 --save_log_dir ../../data/approximate-nn/logs/mnist-l21-3l-n1 --lr 1e-4 --decay 1.0
 '''
 
 
@@ -248,6 +248,15 @@ vis_x_tsne = tsne.fit_transform(vis_x)
 vis_x_mean, vis_x_std = vis_x_tsne.mean(0), vis_x_tsne.std(0)
 vis_x_norm = (vis_x_tsne - vis_x_mean) / (vis_x_std)
 
+
+color_set = ['red', 'blue', 'yellow', 'green', 'gray', 'black', 'orange', 'purple', 'pink', 'skyblue']
+plt.figure(figsize=(8,8))
+for i in range(400):
+    plt.text(vis_x_norm[i, 0], vis_x_norm[i, 1], str(vis_y[i]), color=color_set[vis_y[i]], 
+        fontdict={'weight': 'bold', 'size': 7})
+plt.savefig(os.path.join(args.save_log_dir, 'embed.png'))
+plt.close()
+plt.clf()
 #[0, 1]
 color_set = ['red', 'blue', 'yellow', 'green', 'gray', 'black', 'orange', 'purple', 'pink', 'skyblue']
 plt.figure(figsize=(8,8))
@@ -306,6 +315,52 @@ def kernel_regression(dx, dy, dv):
                 v[i, j] = np.mean(vset[(i, j)])
     return x, y, v
 
+def kernel_regression(dx, dy, dv):
+    # auxiliary functions
+    def grid(self, x_l, x_r, x_steps, y_l, y_r, y_steps):
+        delta_x = (x_r - x_l) / (x_steps - 1)
+        delta_y = (y_r - y_l) / (y_steps - 1)
+        data = np.zeros((x_steps * y_steps, 2))
+        n = 0
+        for i in range(x_steps):
+            for j in range(y_steps):
+                data[n, :] = np.array([delta_x * i + x_l, delta_y * j + y_l])
+                n += 1
+        return data
+
+    def togrid(self, x, nx, ny):
+        data = np.zeros((nx, ny))
+        n = 0
+        for i in range(nx):
+            for j in range(ny):
+                data[j, i] = x[n]
+                n += 1
+        return data
+
+    xl = -2
+    xr = 2
+    data = grid(xl, xr, 20, xl, xr, 20)
+    sigma = (xr - xl) / 20.0
+
+    x = np.ogrid[-xl:xr:20j]
+    y = np.ogrid[-xl:xr:20j]
+    vset = {}
+    v = np.ones((20, 20)) * -1
+    for i in range(len(dx)):
+        cx = int((dx[i] + 2) / sigma)
+        cy = int((dy[i] + 2) / sigma)
+        if (cx, cy) in vset:
+            vset[(cx, cy)].append(dv[i])
+        else:
+            vset[(cx, cy)] = [dv[i]]
+    for i in range(20):
+        for j in range(20):
+            if (i, j) in vset:
+                v[i, j] = np.mean(vset[(i, j)])
+
+    return x, y, v
+
+
 if True:
     accs = []
 
@@ -346,7 +401,6 @@ if True:
                 #i = 0
                 ax=plt.subplot(10,10,i+1)
                 px, py, pv = kernel_regression(vis_x_norm[:, 0], vis_x_norm[:, 1], lvi[:, i])
-                ax.contourf(px, py, pv, 20)                
                 ax.set_title('Sample %d: %.2f, %.2f, %.2f' % (i, u_norm[i], np.mean(pv), np.std(pv)), fontsize=7)
                 ax.axis('off')
             plt.savefig(os.path.join(args.save_log_dir, 'f_{}_samples_{}.png'.format(layer_id, epoch)))

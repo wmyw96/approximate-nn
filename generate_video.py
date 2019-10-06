@@ -11,7 +11,7 @@ def readinimage(path):
     I_array = np.array(I)
     return I_array
 
-dir_ = 'logs/cosc-1000-l12-2l-n3'
+dir_ = 'logs/cosc-1000-l2-3l-n3/cosc-1000-l2-3l-n1'
 
 frames = []
 for i in range(0, 600):
@@ -19,7 +19,7 @@ for i in range(0, 600):
     #im3 = readinimage(os.path.join(dir_, 't1t2n_origin_{}.png'.format(i)))    
     im1 = readinimage(os.path.join(dir_, 'pred_{}.png'.format(i)))
     im2 = readinimage(os.path.join(dir_, 'f_0_samples_{}.png'.format(i)))
-    #im3 = readinimage(os.path.join(dir_, 'f_1_samples_{}.png'.format(i)))
+    im3 = readinimage(os.path.join(dir_, 'f_1_samples_{}.png'.format(i)))
     #im4 = readinimage(os.path.join(dir_, 'f_2_samples_{}.png'.format(i)))
     #im5 = readinimage(os.path.join(dir_, 'f_3_samples_{}.png'.format(i)))
     #im2 = readinimage(os.path.join(dir_, 'theta2_samples_{}.png'.format(i)))
@@ -38,11 +38,11 @@ for i in range(0, 600):
     #im_mi = np.concatenate([im2, im3], 1)
     #im_dn = np.concatenate([im4, im5], 1)
     #im = np.concatenate([im_up, im_mi, im_dn], 0)    
-    im = np.concatenate([im1, im2], 1)
+    #im = np.concatenate([im1, im2], 1)
     #im_up = readinimage(os.path.join(dir_, 't1t2n_resample_{}.png'.format(i)))
     #im_dn = readinimage(os.path.join(dir_, 'ut2n_resample_{}.png'.format(i)))
     
-    #im = np.concatenate([im1, im2, im3], 1)
+    im = np.concatenate([im1, im2, im3], 1)
     #im = im[::2, ::2, :]
     frames.append(im)
 
