@@ -33,6 +33,7 @@ parser.add_argument('--save_log_dir', default='logs/sin1d3-1000', type=str)
 parser.add_argument('--train', default='all', type=str)
 parser.add_argument('--save_weight_dir', type=str, default='../../data/approximate-nn/logs/sin1d3-joint')
 parser.add_argument('--regw', default=0.01, type=float)
+parser.add_argument('--logfile', default='', type=str)
 
 args = parser.parse_args()
 
@@ -54,46 +55,40 @@ def get_network_params():
     activation = [act] * (len(num_hidden) - 1) + [None]
     return num_hidden, weight_decay, activation
 
+
 def feed_forward(x, num_hidden, decay, activation, is_training):
     depth = len(num_hidden)
     layers = [tf.identity(x)]
+    pre_layers = [tf.identity(x)]
     l2_loss = tf.constant(0.0)
     l2_lloss = []
+    inp_dim = int(x.get_shape()[-1])
+    eva = 0.0
     l2_loss_rsp = tf.constant(0.0)
     l2_lloss_rsp = []
-    inp_dim = int(x.get_shape()[-1])
     ip_weights = []
     pre_pnorm = tf.ones([inp_dim, ])
     for _ in range(depth):
         print('layer {}, num hidden = {}, activation = {}, decay = {}'.format(_, num_hidden[_], activation[_], decay[_]))
         init = tf.random_normal_initializer(mean=0,stddev=1/np.sqrt(inp_dim))
-
-        with tf.variable_scope('nn', reuse=False):
-            with tf.variable_scope('dense_' + str(_), reuse=False):
-                w = tf.get_variable(name='kernel', shape=[inp_dim, num_hidden[_]], initializer=init)
-                b = tf.get_variable(name='bias', shape=[1, num_hidden[_]], initializer=tf.zeros_initializer())
-                cur_layer = tf.matmul(layers[-1], w) + b
-                if activation[_] is not None:
-                    print('use activation {}'.format(activation[_]))
-                    cur_layer = tf.nn.tanh(cur_layer)
-   
-        inp_dim = num_hidden[_]
-        
-        #reg = tf.reduce_mean(tf.reduce_sum(tf.square(w), 0))
-        reg = tf.reduce_sum(tf.square(tf.reduce_mean(tf.abs(w), 1) * inp_dim)) / (inp_dim ** 2)
+        with tf.variable_scope('nn/dense_' + str(_), reuse=False):
+            w = tf.get_variable(name='kernel', shape=[inp_dim, num_hidden[_]], initializer=init)
+            b = tf.get_variable(name='bias', shape=[1, num_hidden[_]], initializer=tf.zeros_initializer())
+            fc = tf.matmul(layers[-1], w) + b
+            cur_layer = tf.identity(fc)
+            pre_layers.append(fc)
+            if activation[_] is not None:
+                print('use activation {}'.format(activation[_]))
+                cur_layer = tf.nn.tanh(cur_layer)
+        reg = decay[_] * tf.reduce_mean(tf.square(tf.reduce_mean(tf.abs(w), 1) * inp_dim)) / (inp_dim)
         with tf.variable_scope('ip', reuse=False):
             with tf.variable_scope('imp_weight_' + str(_), reuse=False):
-                p_weight = tf.get_variable(name='ipweight', shape=[num_hidden[_]], initializer=tf.zeros_initializer())
-                p_norm = tf.exp(p_weight)
-                p_norm = p_norm / tf.reduce_sum(p_norm)
-                p_norm = p_norm * num_hidden[_]
+                p_weight = tf.get_variable(name='ipweight', shape=[num_hidden[_]], initializer=tf.ones_initializer())
+                p_norm = p_weight
         ip_weights.append(p_norm)
-
-        pre_pnorm_ = tf.expand_dims(pre_pnorm, 1)
         p_norm_ = tf.expand_dims(p_norm, 0)
-        print('Norm Shape: PRE = {}, CUR = {}'.format(pre_pnorm.get_shape(), p_norm.get_shape()))
         reg_resample = \
-            tf.reduce_sum(tf.square(tf.reduce_mean(tf.abs(w / pre_pnorm_) * p_norm_, 1) * inp_dim) * pre_pnorm) / (inp_dim ** 2)
+            decay[_] * tf.reduce_sum(tf.square(tf.reduce_mean(tf.abs(w) * p_norm_, 1) * inp_dim) / pre_pnorm) / (inp_dim ** 2)
         l2_lloss.append(reg)
         l2_loss += reg
 
@@ -101,9 +96,38 @@ def feed_forward(x, num_hidden, decay, activation, is_training):
 
         l2_lloss_rsp.append(reg_resample)
         l2_loss_rsp += reg_resample
+        inp_dim = num_hidden[_]
+        #l2_lloss.append(reg)
         layers.append(cur_layer)
-    return layers[-1], l2_loss, layers, l2_lloss, l2_loss_rsp, l2_lloss_rsp, ip_weights
+    grads_norm = []
+    grad = layers[-1] * 0.0 + 1
+    for _ in range(depth):
+        fp = layers[depth - 1 - _]
+        fc = pre_layers[depth - _]
+        inp_dim = int(fp.get_shape()[1])
+        out_dim = int(fc.get_shape()[1])
+        print('Layer {}: {}, {}'.format(depth - _, fp.get_shape(), fc.get_shape()))
+        if _ > 0:
+            grad = grad * (1 - tf.square(tf.nn.tanh(fc)))
+        with tf.variable_scope('nn/dense_' + str(depth - _ - 1), reuse=True):
+            w = tf.get_variable('kernel')
+        pp = fp * tf.matmul(grad, w, transpose_b=True) * inp_dim
+        pn = tf.reduce_sum(grad * fc, 1, keep_dims=True)
+        print('pp shape = {}, pn shape = {}'.format(pp.get_shape(), pn.get_shape()))
+        vr = tf.abs(pp - pn) #) #* np.sqrt(inp_dim)
+        if _ == 0:
+            p1 = tf.expand_dims(fp, 2) # [B, M, 1]
+            p1 = p1 * tf.expand_dims(w, 0) * inp_dim # [B, M, k]
+            p2 = tf.expand_dims(fc, 1)     # [B, 1, k]
+            vr = tf.sqrt(tf.reduce_sum(tf.square(p1 - p2), 2))  # [B, M]
+        eva_c = tf.reduce_mean(tf.square(vr)) / inp_dim
+        eva += eva_c * (_ + 1 < depth)
+        grads_norm = [tf.reduce_mean(tf.abs(grad))] + grads_norm
+        grad = tf.matmul(grad, w, transpose_b=True) #* np.sqrt((inp_dim + 0.0) / out_dim)
 
+
+    return layers[-1], l2_loss, layers, l2_lloss, l2_loss_rsp, l2_lloss_rsp, ip_weights, eva
+       
 
 def show_variables(domain, cl):
     print('Parameters in Domain {}'.format(domain))
@@ -121,6 +145,27 @@ def tf_add_grad_noise(all_grads, temp, lr):
     return noise_grads
 
 
+def normalize_grads(all_grads):
+    normalized_grads = []
+    for g, v in all_grads:
+        if g is not None:
+            g = g - tf.reduce_mean(g)
+        normalized_grads.append((g, v))
+    return normalized_grads
+
+
+def boundary_check(x, thr=1e-7):
+    ops = []
+    for pweight in x:
+        posind = tf.cast(tf.greater(pweight, thr), dtype=tf.float32)
+        npositive = tf.reduce_sum(posind)
+        positive = posind * pweight
+        negative = (1.0 - posind) * thr
+        cm = (tf.reduce_sum(positive) - int(pweight.get_shape()[0]) + tf.reduce_sum(negative)) / npositive
+        ops.append(tf.assign(pweight, positive - posind * cm + negative))
+    return ops
+
+
 def build_model(num_hidden, decay, activation):
     x = tf.placeholder(dtype=tf.float32, shape=[None, args.x_dim])
     y = tf.placeholder(dtype=tf.float32, shape=[None, 1])
@@ -129,7 +174,7 @@ def build_model(num_hidden, decay, activation):
     lr_decay = tf.placeholder(dtype=tf.float32, shape=[])
 
     with tf.variable_scope('network'):
-        out, reg, layers, regs, reg_rsp, regs_rsp, ip_ws = \
+        out, reg, layers, regs, reg_rsp, regs_rsp, ip_ws, eva_loss = \
             feed_forward(x, num_hidden, decay, activation, is_training)
 
     rmse_loss = tf.reduce_mean(tf.reduce_sum(tf.square(y - out), 1))
@@ -148,11 +193,17 @@ def build_model(num_hidden, decay, activation):
     noise_grads = tf_add_grad_noise(all_grads, 1e-1, args.lr * lr_decay)
     all_train_op = all_op.apply_gradients(grads_and_vars=noise_grads)
 
-    rsp_op = tf.train.AdamOptimizer(1e-3 * lr_decay)
-    rsp_grads = rsp_op.compute_gradients(loss=rsp_loss, var_list=ip_weights)
+    rsp_op = tf.train.GradientDescentOptimizer(1e-2 * lr_decay)
+    rsp_grads = rsp_op.compute_gradients(loss=rsp_loss, var_list=[ip_weights[-2]])
+    rsp_grads = normalize_grads(rsp_grads)
+    show_variables('Resample opt', [ip_weights[-2]])
     rsp_train_op = rsp_op.apply_gradients(grads_and_vars=rsp_grads)
-    rsp_clear = tf.variables_initializer(rsp_op.variables() + ip_weights)
-    show_variables('Resample Variables', rsp_op.variables())
+    rsp_boundary = boundary_check(ip_weights)
+    #rsp_train_op = 
+    rsp_clear = tf.variables_initializer(ip_weights)
+    #show_variables('Resample Variables', rsp_op.variables())
+
+    all_clear = tf.variables_initializer(all_op.variables())
 
     weight_dict = {}
     for item in all_weights:
@@ -185,19 +236,29 @@ def build_model(num_hidden, decay, activation):
         'all':{
             'weights': all_weights,
             'train': all_train_op,
-            'rsp_train': rsp_train_op,
+            #'rsp_train': rsp_train_op,
             'rsp_loss': rsp_loss,
             'rmse_loss': rmse_loss,
             'reg_loss': reg,
+            'eva_loss': eva_loss,
         },
         'eval':{
             'weights': weight_dict,
             'rmse_loss': rmse_loss,
+            'reg_loss': reg,
             'out': out,
-            'ip_weights': ip_ws
+            'ip_weights': ip_ws,
+            'ip_grad': rsp_grads,
+            'eva_loss': eva_loss
         },
         'assign': assign,
-        'clear': rsp_clear
+        'clear': rsp_clear,
+        'all_clear': all_clear,
+        'rsp':{
+            'rsp_train': rsp_train_op,
+            'rsp_loss': rsp_loss,
+        },
+        'boundary': rsp_boundary,
     }
     for i in range(len(num_hidden)):
         targets['all']['reg{}_loss'.format(i)] = regs[i]
@@ -217,7 +278,7 @@ else:
 RANGE = 2 * np.pi
 reg_func = cosc
 
-ndata_train = 100000
+ndata_train = 60000
 train_x, train_y = cosc_data(-RANGE, RANGE, 1.0, ndata_train)
 nlayers = len(num_hidden)
 
@@ -228,10 +289,16 @@ train_x = (train_x - mean_x) / std_x
 
 sess.run(tf.global_variables_initializer())
 
+f = open(args.logfile, 'w')
+f.truncate()
+f.close()
 
 def get_norm(u, axis=1):
     return np.sqrt(np.sum(np.square(u), axis))
 
+
+def get_l1norm(u, axis=1):
+    return np.mean(np.abs(u), axis) * np.sqrt(u.shape[0])
 
 
 def resample(prelayer, nextlayer, sample_weight):
@@ -272,9 +339,9 @@ def resample_nn(sess, ph, targets, nlayers):
     for i in range(nlayers):
         kernels.append(weights['network/nn/dense_{}/kernel:0'.format(i)])
         biases.append(weights['network/nn/dense_{}/bias:0'.format(i)])
-    for ii in range(nlayers - 1):
-#    if True:
-        #ii = 0
+    #for ii in range(nlayers - 1):
+    if True:
+        ii = 0
         i = nlayers - 2 - ii
         curlayer = np.concatenate([kernels[i], biases[i]], 0)
         print('IP weight sum in layer {}: {}'.format(i, np.sum(ip[i])))
@@ -283,7 +350,9 @@ def resample_nn(sess, ph, targets, nlayers):
         biases[i] = np.expand_dims(curlayer_n[-1, :], 0)
     feed = {}
     for i in range(nlayers):
-        feed[ph['dense_{}_kernel'.format(i)]] = kernels[i]
+    #if True:
+    #    i = 0
+        feed[ph['dense_{}_kernel'.format(i)]] = add_noise(kernels[i])
         feed[ph['dense_{}_bias'.format(i)]] = biases[i]
     sess.run(targets['assign'], feed)
     sess.run(targets['clear'])
@@ -310,7 +379,7 @@ if True:
         pp1.append(fetch[2])
     train_l2v = np.concatenate(pp1, 0)
 
-
+    prersp = 0
     for epoch in range(args.num_epoches):
         test_info = {}
         for t in tqdm(range(ndata_train // args.batch_size)):
@@ -322,6 +391,31 @@ if True:
             update_loss(fetch, test_info)
             fetch = sess.run(targets['layers'], feed_dict={ph['is_training']: False, 
                 ph['x']: batch_x, ph['y']: batch_y, ph['lr_decay']: args.decay**(epoch)})
+
+
+        need_resample = ((epoch % 100 == 0 and epoch <= 300) or (epoch % 10 == 0 and epoch <= 50)) and (epoch > 0)
+        if need_resample:
+            sess.run(targets['clear'])
+            print('Optimizing the resample weights ...')
+            for tt in range(100000):
+                #if tt % 100 == 0:
+                fetch = sess.run(targets['rsp']['rsp_train'], feed_dict={ph['lr_decay']: 20 * 0.99**(tt//5000)})
+                pws = sess.run(targets['eval']['ip_weights'])
+                print(np.mean(pws[-1]))
+                while True:
+                    ck = True
+                    for pw in pws:
+                        if np.min(pw) < 0:
+                            ck = False
+                            print('p[{}] = {}'.format(np.argmin(pw), np.min(pw)))
+                    if not ck:
+                        print('boundary check {}'.format(tt))
+                        sess.run(targets['boundary'])
+                    else:
+                        break
+                if tt % 100000 == 0:
+                    print('Resample REG LOSS = {}'.format(sess.run(targets['rsp']['rsp_loss'])))
+                
 
         rmse.append(np.mean(test_info['rmse_loss']))
         print_log('Test', epoch, test_info)
@@ -360,36 +454,51 @@ if True:
             plt.figure(figsize=(8,8))
             lvi = layers_value[layer_id + 1]
             pweight = sess.run(targets['eval']['ip_weights'])[layer_id]
-            for i in range(100):
-                ax=plt.subplot(10,10,i+1)
-                ax.scatter(np.squeeze(xp), lvi[:, i], color='r', s=0.2+0.7*thetan_norm[i]/np.max(thetan_norm))
-                ax.set_title('Sample %d: %.2f' % (i, pweight[i]), fontsize=5)
-                ax.axis('off')
-            plt.savefig(os.path.join(args.save_log_dir, 'f_{}_samples_{}.png'.format(layer_id, epoch)))
-            plt.close()
-            plt.clf()
-        
-            plt.figure(figsize=(8,8))
-            plt.scatter(x=get_norm(thetai, 0), y=get_norm(thetan, 1), color='red', s=0.2)
-            for i in range(100):
-                plt.text(get_norm(thetai, 0)[i], get_norm(thetan, 1)[i], str(i), color='skyblue', 
-                     fontdict={'weight': 'bold', 'size': 7})
-            plt.savefig(os.path.join(args.save_log_dir, 'theta{}_index_{}.png'.format(layer_id, epoch)))
-            plt.close()
-            plt.clf()
             
+            if epoch % 10 == 0:
+                for i in range(100):
+                    ax=plt.subplot(10,10,i+1)
+                    ax.scatter(np.squeeze(xp), lvi[:, i], color='r', s=0.2+0.7*thetan_norm[i]/np.max(thetan_norm))
+                    ax.set_title('Sample %d: %.2f' % (i, pweight[i]), fontsize=5)
+                    ax.axis('off')
+                plt.savefig(os.path.join(args.save_log_dir, 'f_{}_samples_{}.png'.format(layer_id, epoch)))
+                plt.close()
+                plt.clf()
+                np.save(os.path.join(args.save_log_dir, 'f_e{}_l{}.npy'.format(epoch, layer_id + 1)), lvi)
+                np.save(os.path.join(args.save_log_dir, 'theta_e{}_l{}.npy'.format(epoch, layer_id)), thetai)
+                np.save(os.path.join(args.save_log_dir, 'theta_e{}_l{}.npy'.format(epoch, layer_id + 1)), thetan)
+                np.save(os.path.join(args.save_log_dir, 'pweight_e{}_l{}.npy'.format(epoch, layer_id + 1)), pweight)
+
             thetanorm = get_norm(thetai, 0)
             print('Distribution of theta {} norm: {} +/- {}'.format(layer_id, np.mean(thetanorm), np.std(thetanorm)))
 
+            if not need_resample:
+                 continue
+            idx = (-pweight).argsort()[:100]
+            print('Top k value: {}'.format(pweight[idx[0:10]]))
+            print('Top k value: {}'.format(get_l1norm(thetan, 1)[idx[0:10]]))
+            plt.figure(figsize=(8,8))
+            for iii in range(100):
+                i = idx[iii]
+                ax=plt.subplot(10,10,iii+1)
+                ax.scatter(np.squeeze(xp), lvi[:, i], color='r', s=0.2+0.7*thetan_norm[i]/np.max(thetan_norm))
+                ax.set_title('%.2f, %.2f, %.2f' % (get_l1norm(thetai, 0)[i], get_l1norm(thetan, 1)[i], pweight[i]), fontsize=5)
+                ax.axis('off')
+            plt.savefig(os.path.join(args.save_log_dir, 'f_{}_samples_top_{}.png'.format(layer_id, epoch)))
+            plt.close()
+            plt.clf()
+
         do_rsp = False
         if epoch <= 50:
-            if epoch % 10 == 0:
+            if epoch % 10 == 0 and epoch > 0:
                 resample_nn(sess, ph, targets, nlayers)
                 do_rsp = True
+                preresp=epoch
         else:
-            if epoch % 100 == 0:
+            if epoch % 100 == 0 and epoch <= 300:
                 resample_nn(sess, ph, targets, nlayers)
                 do_rsp = True
+                preresp=epoch
         
         if not do_rsp:
             cur_idx = np.random.permutation(ndata_train)
@@ -399,15 +508,19 @@ if True:
                 batch_x = train_x[batch_idx, :]
                 batch_y = train_y[batch_idx]
                 mode = args.train
-                ep_id = epoch
+                ep_id = epoch - prersp
                 fetch = sess.run(targets[mode], feed_dict={ph['is_training']: True, 
                     ph['x']: batch_x, ph['y']: batch_y, ph['lr_decay']: args.decay**(ep_id)})
                 update_loss(fetch, train_info)
-            
-            if (epoch + 1) % 10 == 0:
-                for tt in range(10000):
-                    #if tt % 100 == 0:
-                    fetch = sess.run(targets['all']['rsp_train'], feed_dict={ph['lr_decay']: 1.0})
-                    #if tt % 100 == 0:
-                print('Resample REG LOSS = {}'.format(sess.run(targets['all']['rsp_loss'])))
             print_log('Train', epoch, train_info)
+        else:
+            sess.run(targets['all_clear'])
+
+        with open(args.logfile, 'a') as f:
+            if not do_rsp:
+                rmsec = np.mean(train_info['rmse_loss'])
+            else:
+                rmsec = np.mean(test_info['rmse_loss'])
+            print_str = '{}, {}, {}, {}, {}\n'.format(epoch, np.mean(test_info['reg_loss']), np.mean(test_info['rmse_loss']), rmsec, np.mean(test_info['eva_loss']))
+            f.write(print_str)
+        #print_log('Train', epoch, train_info)

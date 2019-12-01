@@ -63,7 +63,7 @@ def get_network_params():
     activation = [act] * (len(num_hidden) - 1) + [None]
     return num_hidden, weight_decay, activation
 
-def feed_forward(x, num_hidden, decay, activation, is_training):
+def feed_forward(x, num_hidden, decay, activation, is_training, dropout=1.0):
     depth = len(num_hidden)
     layers = [tf.identity(x)]
     pre_layers = [tf.identity(x)]
@@ -75,9 +75,10 @@ def feed_forward(x, num_hidden, decay, activation, is_training):
         print('layer {}, num hidden = {}, activation = {}, decay = {}'.format(_, num_hidden[_], activation[_], decay[_]))
         init = tf.random_normal_initializer(mean=0,stddev=1/np.sqrt(inp_dim))
         with tf.variable_scope('dense_' + str(_), reuse=False):
+            pre_layer = tf.nn.dropout(layers[-1], keep_prob=1-dropout)
             w = tf.get_variable(name='kernel', shape=[inp_dim, num_hidden[_]], initializer=init)
             b = tf.get_variable(name='bias', shape=[1, num_hidden[_]], initializer=tf.zeros_initializer())
-            fc = tf.matmul(layers[-1], w) + b
+            fc = tf.matmul(pre_layer, w) + b
             cur_layer = tf.identity(fc)
             pre_layers.append(fc)
             if activation[_] is not None:
@@ -143,16 +144,16 @@ def build_model(num_hidden, decay, activation, xmean, xstd):
     onehot_y = tf.one_hot(y, args.nclass)
     is_training = tf.placeholder(dtype=tf.bool, shape=[])
     lr_decay = tf.placeholder(dtype=tf.float32, shape=[])
-    
+    dropout = tf.placeholder(dtype=tf.float32, shape=[])
     with tf.variable_scope('fake_image'):
         img_w = tf.get_variable(name='img', shape=[4, args.x_dim], initializer=tf.random_normal_initializer(mean=0,stddev=1))
         #img = (tf.nn.sigmoid(img_w) * 255 - tf.convert_to_tensor(xmean)) / tf.convert_to_tensor(xstd)
         img = img_w * 1 * (xstd > 1e-6)
         print('understandable {}'.format(np.mean(xstd > 1e-6)))
     with tf.variable_scope('network', reuse=False):
-        out, reg, layers, regs, eva, grad_norm = feed_forward(x, num_hidden, decay, activation, is_training)
+        out, reg, layers, regs, eva, grad_norm = feed_forward(x, num_hidden, decay, activation, is_training, dropout)
     with tf.variable_scope('network', reuse=True):
-        _, _, layers_fake, _, _, _ = feed_forward(img, num_hidden, decay, activation, is_training)
+        _, _, layers_fake, _, _, _ = feed_forward(img, num_hidden, decay, activation, is_training, dropout)
 
     #print(out.get_shape(), onehot_y.get_shape())
     log_y = tf.nn.softmax_cross_entropy_with_logits(labels=onehot_y, logits=out, dim=1)
@@ -201,6 +202,7 @@ def build_model(num_hidden, decay, activation, xmean, xstd):
         'y': y,
         'lr_decay': lr_decay,
         'is_training': is_training,
+        'dropout': dropout,
         'good': tf.placeholder(dtype=tf.float32, shape=[4, args.x_dim])
     }
     eva_loss = eva
@@ -237,18 +239,28 @@ def build_model(num_hidden, decay, activation, xmean, xstd):
 #fashion_mnist = keras.datasets.fashion_mnist
 
 #mnist = fashion_mnist.load_data()
-mnist = tf.contrib.learn.datasets.load_dataset("mnist")
+#mnist = tf.contrib.learn.datasets.load_dataset("mnist")
 
-train_images = mnist.train.images # Returns np.array
-train_labels = np.asarray(mnist.train.labels, dtype=np.int32)
-test_images = mnist.test.images # Returns np.array
-test_labels = np.asarray(mnist.test.labels, dtype=np.int32)
+images = np.load('../../data/embed-mini-imagenet/train_feature_norot.npy')
+labels = np.load('../../data/embed-mini-imagenet/train_label_norot.npy')
+n_data = images.shape[0]
+dataidx = np.random.permutation(n_data)
+images = images[dataidx, :]
+labels = labels[dataidx]
+
+train_images, train_labels = images[:n_data // 10 * 7, :], labels[:n_data // 10 * 7,]
+test_images, test_labels = images[n_data // 10 * 7:, :], labels[n_data // 10 * 7:,]
+
+#train_images = mnist.train.images # Returns np.array
+#train_labels = np.asarray(mnist.train.labels, dtype=np.int32)
+#test_images = mnist.test.images # Returns np.array
+#test_labels = np.asarray(mnist.test.labels, dtype=np.int32)
 #(train_images, train_labels), (test_images, test_labels) = mnist
 
-train_images = train_images.reshape(-1, args.x_dim)
-train_labels = train_labels.reshape(-1)
-test_images = test_images.reshape(-1, args.x_dim)
-test_labels = test_labels.reshape(-1)
+#train_images = train_images.reshape(-1, args.x_dim)
+#train_labels = train_labels.reshape(-1)
+#test_images = test_images.reshape(-1, args.x_dim)
+#test_labels = test_labels.reshape(-1)
 
 # scaling
 mean_x = np.mean(train_images, 0, keepdims=True)
@@ -345,15 +357,15 @@ if True:
             batch_y = test_labels[t * args.batch_size: (t + 1) * args.batch_size]
 
             fetch = sess.run(targets['eval'], feed_dict={ph['is_training']: False, 
-                ph['x']: batch_x, ph['y']: batch_y})
+                ph['x']: batch_x, ph['y']: batch_y, ph['dropout']: 0.0})
             update_loss(fetch, test_info)
             fetch = sess.run(targets['layers'], feed_dict={ph['is_training']: False, 
-                ph['x']: batch_x, ph['y']: batch_y, ph['lr_decay']: args.decay**(epoch)})
+                ph['x']: batch_x, ph['y']: batch_y, ph['dropout']: 0.0, ph['lr_decay']: args.decay**(epoch)})
 
         accs.append(np.mean(test_info['acc_loss']))
         print_log('Test', epoch, test_info)
         
-        layers_value = sess.run(targets['layers'], feed_dict={ph['is_training']: True, ph['x']: vis_x})
+        layers_value = sess.run(targets['layers'], feed_dict={ph['is_training']: True, ph['dropout']: 0.0, ph['x']: vis_x})
         for i in range(nlayers):
             layer_i = layers_value[i]     #  [B, m]
             layer_norm = np.sqrt(np.sum(np.square(layer_i), 1))
@@ -432,7 +444,7 @@ if True:
             mode = args.train
             ep_id = epoch
             fetch = sess.run(targets[mode], feed_dict={ph['is_training']: True, 
-                ph['x']: batch_x, ph['y']: batch_y, ph['lr_decay']: args.decay**(ep_id)})
+                ph['x']: batch_x, ph['dropout']: 0.5, ph['y']: batch_y, ph['lr_decay']: args.decay**(ep_id)})
             update_loss(fetch, train_info)
 
             #print(fetch['rmse_loss'])
